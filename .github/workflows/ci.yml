@@ -1,0 +1,74 @@
+name: Hedrion checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: hedrion
+          POSTGRES_USER: hedrion
+          POSTGRES_PASSWORD: hedrion-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hedrion -d hedrion"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://hedrion:hedrion-ci-only@127.0.0.1:5432/hedrion?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed packages apps/mobile/lib apps/mobile/test apps/mobile/integration_test apps/backoffice/lib apps/backoffice/test apps/public_web/lib apps/public_web/bin apps/public_web/test services/api tool
+      - run: flutter analyze --fatal-infos
+      - run: dart test packages/domain/test packages/blocs/test packages/hedrion_api_client/test services/api/test apps/public_web/test
+      - run: flutter test
+        working-directory: apps/mobile
+      - run: flutter test
+        working-directory: apps/backoffice
+      - run: python -m unittest discover -s tests -v
+        working-directory: services/gpu_worker
+      - run: flutter build web --release --dart-define=HEDRION_MODE=api
+        working-directory: apps/mobile
+      - run: flutter build web --release --dart-define=HEDRION_MODE=api
+        working-directory: apps/backoffice
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build windows --release
+        working-directory: apps/backoffice
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build apk --debug --dart-define=HEDRION_MODE=api
+        working-directory: apps/mobile

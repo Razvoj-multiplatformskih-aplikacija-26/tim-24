@@ -1,0 +1,3 @@
+# Optional experimental CPU image/CLI contract tests only.
+# Not required by the active provider-agnostic fake demo.
+Pillow==12.3.0

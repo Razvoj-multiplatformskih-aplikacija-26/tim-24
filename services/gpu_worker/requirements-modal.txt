@@ -1,0 +1,3 @@
+# Unselected experimental deployment SDK; not part of the active product setup.
+# Published package verified on PyPI 2026-10-21; no cloud deployment was performed.
+modal==1.6.2

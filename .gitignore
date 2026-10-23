@@ -1,0 +1,22 @@
+# Build output and local configuration
+.dart_tool/
+.packages
+build/
+**/build/
+**/.flutter-plugins*
+**/local.properties
+**/key.properties
+*.jks
+*.keystore
+.env
+.env.*
+!.env.example
+.idea/
+*.iml
+__pycache__/
+*.pyc
+.venv/
+.local/
+.data/
+coverage/
+services/api/storage/

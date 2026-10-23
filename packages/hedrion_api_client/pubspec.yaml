@@ -1,0 +1,11 @@
+name: hedrion_api_client
+description: Versioned Hedrion transport and durable offline synchronization ports.
+publish_to: none
+resolution: workspace
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+dependencies:
+  domain: any
+  http: ^1.6.0
+dev_dependencies:
+  test: ^1.26.0

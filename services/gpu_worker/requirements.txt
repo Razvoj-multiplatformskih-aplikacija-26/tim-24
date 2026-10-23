@@ -1,0 +1,2 @@
+# Fake provider, private HTTP bridge and tests use Python standard library only.
+# Real Pixal3D dependencies must be built inside the separately verified GPU image.
