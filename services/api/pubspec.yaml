@@ -1,0 +1,17 @@
+name: hedrion_api
+description: Authoritative Hedrion Dart API and durable PostgreSQL job scheduler.
+publish_to: none
+resolution: workspace
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+dependencies:
+  domain: any
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+  postgres: ^3.5.9
+  crypto: ^3.0.6
+  cryptography: ^2.7.0
+  http: ^1.3.0
+  image: ^4.3.0
+dev_dependencies:
+  test: ^1.25.15

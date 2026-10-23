@@ -1,0 +1,8 @@
+name: domain
+description: Pure Dart Hedrion entities, ports and deterministic business rules.
+publish_to: none
+resolution: workspace
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+dev_dependencies:
+  test: ^1.26.0

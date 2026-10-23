@@ -1,0 +1,12 @@
+name: blocs
+description: Shared pure Dart event-driven application workflows.
+publish_to: none
+resolution: workspace
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+dependencies:
+  domain: any
+  bloc: ^9.0.0
+  equatable: '>=2.0.7 <4.0.0'
+dev_dependencies:
+  test: ^1.26.0

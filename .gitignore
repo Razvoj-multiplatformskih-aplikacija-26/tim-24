@@ -1,0 +1,47 @@
+# Lokalni AI promptovi, specifikacije i planovi
+/HEDRION_AI_SPEC_KT1_ALIGNED.md
+/HEDRION_ANALIZA_I_PREDLOG_UNAPREDJENJA.md
+/HEDRION_IMPLEMENTATION_PROMPT.md
+/*_IMPLEMENTATION_PROMPT*.md
+/*_AI_SPEC*.md
+
+# Instrukcije i lokalna konfiguracija AI alata
+AGENTS.md
+AGENTS.override.md
+CLAUDE.md
+GEMINI.md
+.codex/
+.agents/
+.claude/
+.cursor/
+.cursorrules
+.windsurf/
+.windsurfrules
+.continue/
+.aider*
+/.github/copilot-instructions.md
+/.github/instructions/
+/.github/prompts/
+
+# Build output and local configuration
+.dart_tool/
+.packages
+build/
+**/build/
+**/.flutter-plugins*
+**/local.properties
+**/key.properties
+*.jks
+*.keystore
+.env
+.env.*
+!.env.example
+.idea/
+*.iml
+__pycache__/
+*.pyc
+.venv/
+.local/
+.data/
+coverage/
+services/api/storage/
