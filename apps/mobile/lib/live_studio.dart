@@ -8,6 +8,7 @@ import 'main.dart';
 import 'sqlite_persistence.dart';
 import 'studio_theme.dart';
 import 'initial_route.dart';
+import 'studio_auth_backdrop.dart';
 
 class LiveStudio extends StatefulWidget {
   const LiveStudio({super.key});
@@ -186,120 +187,124 @@ class _LiveStudioState extends State<LiveStudio> {
       debugShowCheckedModeBanner: false,
       title: 'Hedrion · Prijava',
       theme: studioTheme(),
-      home: Scaffold(
-        body: restoring
-            ? const Center(child: CircularProgressIndicator())
-            : Center(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(24),
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 420),
-                    child: Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(30),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            const Icon(
-                              Icons.view_in_ar_rounded,
-                              color: accent,
-                              size: 48,
-                            ),
-                            const SizedBox(height: 16),
-                            const Text(
-                              'hedrion',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                fontSize: 32,
-                                fontWeight: FontWeight.w700,
+      home: StudioAuthBackdrop(
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: restoring
+              ? const Center(child: CircularProgressIndicator())
+              : Center(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(24),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 420),
+                      child: Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(30),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              const Icon(
+                                Icons.view_in_ar_rounded,
+                                color: accent,
+                                size: 48,
                               ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              register
-                                  ? 'Otvori svoj 3D studio'
-                                  : 'Dobro došao u svoj studio',
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: muted),
-                            ),
-                            const SizedBox(height: 30),
-                            if (register) ...[
+                              const SizedBox(height: 16),
+                              const Text(
+                                'hedrion',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 32,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                register
+                                    ? 'Otvori svoj 3D studio'
+                                    : 'Dobro došao u svoj studio',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(color: muted),
+                              ),
+                              const SizedBox(height: 30),
+                              if (register) ...[
+                                TextField(
+                                  controller: name,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Ime za prikaz',
+                                  ),
+                                ),
+                                const SizedBox(height: 14),
+                              ],
                               TextField(
-                                controller: name,
+                                controller: email,
+                                keyboardType: TextInputType.emailAddress,
+                                autofillHints: const [AutofillHints.email],
                                 decoration: const InputDecoration(
-                                  labelText: 'Ime za prikaz',
+                                  labelText: 'E-mail',
                                 ),
                               ),
                               const SizedBox(height: 14),
-                            ],
-                            TextField(
-                              controller: email,
-                              keyboardType: TextInputType.emailAddress,
-                              autofillHints: const [AutofillHints.email],
-                              decoration: const InputDecoration(
-                                labelText: 'E-mail',
+                              TextField(
+                                controller: password,
+                                obscureText: true,
+                                autofillHints: const [AutofillHints.password],
+                                decoration: const InputDecoration(
+                                  labelText: 'Lozinka',
+                                ),
+                                onSubmitted: (_) {
+                                  if (!busy) {
+                                    authenticate();
+                                  }
+                                },
                               ),
-                            ),
-                            const SizedBox(height: 14),
-                            TextField(
-                              controller: password,
-                              obscureText: true,
-                              autofillHints: const [AutofillHints.password],
-                              decoration: const InputDecoration(
-                                labelText: 'Lozinka',
-                              ),
-                              onSubmitted: (_) {
-                                if (!busy) {
-                                  authenticate();
-                                }
-                              },
-                            ),
-                            const SizedBox(height: 10),
-                            if (error != null)
-                              Text(
-                                error!,
-                                style: const TextStyle(
-                                  color: Color(0xffffa49e),
+                              const SizedBox(height: 10),
+                              if (error != null)
+                                Text(
+                                  error!,
+                                  style: const TextStyle(
+                                    color: Color(0xffffa49e),
+                                  ),
+                                ),
+                              const SizedBox(height: 20),
+                              FilledButton(
+                                onPressed: busy ? null : authenticate,
+                                child: Text(
+                                  busy
+                                      ? 'Sačekajte…'
+                                      : register
+                                      ? 'Registruj se'
+                                      : 'Prijavi se',
                                 ),
                               ),
-                            const SizedBox(height: 20),
-                            FilledButton(
-                              onPressed: busy ? null : authenticate,
-                              child: Text(
-                                busy
-                                    ? 'Sačekajte…'
-                                    : register
-                                    ? 'Registruj se'
-                                    : 'Prijavi se',
+                              TextButton(
+                                onPressed: busy
+                                    ? null
+                                    : () =>
+                                          setState(() => register = !register),
+                                child: Text(
+                                  register
+                                      ? 'Već imam nalog'
+                                      : 'Napravi novi nalog',
+                                ),
                               ),
-                            ),
-                            TextButton(
-                              onPressed: busy
-                                  ? null
-                                  : () => setState(() => register = !register),
-                              child: Text(
-                                register
-                                    ? 'Već imam nalog'
-                                    : 'Napravi novi nalog',
+                              const SizedBox(height: 14),
+                              const Text(
+                                'Isti nalog, modeli i poslovi na telefonu i vebu. Generisanje zahteva internet.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: muted,
+                                  fontSize: 11,
+                                  height: 1.5,
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: 14),
-                            const Text(
-                              'Isti nalog, modeli i poslovi na telefonu i vebu. Generisanje zahteva internet.',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: muted,
-                                fontSize: 11,
-                                height: 1.5,
-                              ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
+        ),
       ),
     );
   }

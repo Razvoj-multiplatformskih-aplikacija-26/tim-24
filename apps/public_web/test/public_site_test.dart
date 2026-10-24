@@ -148,6 +148,43 @@ void main() {
 
   group('Jaspr HTML responses', () {
     test(
+      'landing has creation entries that preserve the intended flow through login',
+      () async {
+        final client = MockClient(
+          (_) async => utf8Response(
+            jsonEncode({
+              'assets': [publicJson('chest')],
+            }),
+            200,
+          ),
+        );
+        final (response, html) = await request(siteWith(client), '/');
+        expect(response.statusCode, 200);
+        expect(html, contains('What will you create'));
+        for (final flow in ['text-to-3d', 'image-to-3d', 'text-to-image']) {
+          expect(
+            html,
+            contains('https://studio.example.test#/workspace?flow=$flow'),
+          );
+        }
+        expect(html, contains('Community'));
+        expect(html, contains('/assets/chest'));
+      },
+    );
+
+    test(
+      'landing keeps studio entry available when the public catalog is unavailable',
+      () async {
+        final client = MockClient((_) async => utf8Response('{}', 503));
+        final (response, html) = await request(siteWith(client), '/');
+        expect(response.statusCode, 200);
+        expect(html, contains('Start creating'));
+        expect(html, contains('Biblioteka je privremeno nedostupna'));
+        expect(html, isNot(contains('class="card"')));
+      },
+    );
+
+    test(
       'case-sensitive generated slugs survive listing, detail and cursor URLs',
       () async {
         const slug = 'smoke-model-1792595665460639-mWM7CXkJ';

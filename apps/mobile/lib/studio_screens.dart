@@ -10,302 +10,13 @@ import 'app_connection.dart';
 import 'asset_preview.dart';
 import 'memory_asset_repository.dart';
 import 'studio_theme.dart';
-import 'sync_panel.dart';
+import 'studio_chrome.dart';
+import 'studio_welcome.dart';
+export 'studio_chrome.dart' show StudioShell;
 import 'generation_history.dart';
 import 'reference_image_button.dart';
 import 'asset_fields.dart';
 import 'project_filter.dart';
-
-class StudioShell extends StatelessWidget {
-  const StudioShell({
-    super.key,
-    required this.child,
-    this.title = 'Moj studio',
-  });
-  final Widget child;
-  final String title;
-  @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      final wide = constraints.maxWidth >= 1000;
-      final repository = context.read<AssetRepository>();
-      final connection = StudioConnection.maybeOf(context);
-      final live = connection?.client != null;
-      Widget navigation() => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(24, 30, 24, 38),
-            child: Row(
-              children: [
-                Icon(Icons.view_in_ar_rounded, color: accent, size: 30),
-                SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'hedrion',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 25,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -1,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          for (final item in [
-            (Icons.dashboard_outlined, 'Moj studio', '/'),
-            (Icons.folder_outlined, 'Projekti', '/projects'),
-            (Icons.public_outlined, 'Moje prijave', '/submissions'),
-            (Icons.settings_outlined, 'Profil i podešavanja', '/profile'),
-          ])
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
-              child: ListTile(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                selected: title == item.$2,
-                selectedTileColor: accent.withValues(alpha: .1),
-                leading: Icon(item.$1),
-                title: Text(item.$2),
-                onTap: () => context.go(item.$3),
-              ),
-            ),
-          const Spacer(),
-          Padding(
-            padding: const EdgeInsets.all(20),
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                border: Border.all(color: const Color(0xff31384d)),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.science_outlined, color: accent),
-                  SizedBox(height: 10),
-                  Text(
-                    live ? 'Povezani studio' : 'KT1 demonstracija',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  SizedBox(height: 6),
-                  Text(
-                    live
-                        ? 'Tvoj nalog i biblioteka dostupni su na telefonu i vebu.'
-                        : 'Lokalni podaci u memoriji. Generisanje je simulirano.',
-                    style: TextStyle(color: muted, fontSize: 12, height: 1.5),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          ListTile(
-            leading: CircleAvatar(
-              backgroundColor: Color(0xff332c53),
-              child: Text('VK', style: TextStyle(color: accent)),
-            ),
-            title: Text('Kreator'),
-            subtitle: Text(
-              live
-                  ? '${connection!.client!.user?['displayName'] ?? 'Prijavljen nalog'}'
-                  : 'Demo nalog',
-              style: const TextStyle(color: muted),
-            ),
-          ),
-          const SizedBox(height: 18),
-        ],
-      );
-      return Scaffold(
-        drawer: wide
-            ? null
-            : Drawer(backgroundColor: background, child: navigation()),
-        appBar: wide
-            ? null
-            : AppBar(
-                title: const Text(
-                  'hedrion',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-                actions: [
-                  IconButton(
-                    tooltip: 'Osveži biblioteku',
-                    onPressed: () =>
-                        context.read<AssetBloc>().add(const LoadAssets()),
-                    icon: const Icon(Icons.refresh),
-                  ),
-                  _demoMenu(context, repository),
-                ],
-              ),
-        body: Row(
-          children: [
-            if (wide) ...[
-              SizedBox(width: 235, child: navigation()),
-              const VerticalDivider(width: 1, color: Color(0xff242b40)),
-            ],
-            Expanded(
-              child: Column(
-                children: [
-                  if (wide)
-                    Container(
-                      height: 76,
-                      padding: const EdgeInsets.symmetric(horizontal: 36),
-                      decoration: const BoxDecoration(
-                        border: Border(
-                          bottom: BorderSide(color: Color(0xff242b40)),
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Text(title, style: const TextStyle(color: muted)),
-                          const Spacer(),
-                          const Icon(
-                            Icons.cloud_done_outlined,
-                            color: muted,
-                            size: 18,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            live ? 'Povezano sa serverom' : 'Lokalni demo',
-                            style: TextStyle(color: muted, fontSize: 12),
-                          ),
-                          const SizedBox(width: 12),
-                          IconButton(
-                            tooltip: 'Osveži biblioteku',
-                            onPressed: () => context.read<AssetBloc>().add(
-                              const LoadAssets(),
-                            ),
-                            icon: const Icon(Icons.refresh),
-                          ),
-                          _demoMenu(context, repository),
-                        ],
-                      ),
-                    ),
-                  const SyncPanel(),
-                  Expanded(
-                    child: BlocListener<AssetBloc, AssetState>(
-                      listenWhen: (a, b) =>
-                          b.error != null && a.error != b.error,
-                      listener: (context, state) =>
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text(errorMessage(state.error!))),
-                          ),
-                      child: child,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        bottomNavigationBar: wide
-            ? null
-            : NavigationBar(
-                selectedIndex: title == 'Projekti'
-                    ? 1
-                    : title == 'Moje prijave'
-                    ? 2
-                    : 0,
-                onDestinationSelected: (i) =>
-                    context.go(['/', '/projects', '/submissions'][i]),
-                destinations: const [
-                  NavigationDestination(
-                    icon: Icon(Icons.dashboard_outlined),
-                    label: 'Studio',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.folder_outlined),
-                    label: 'Projekti',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.public_outlined),
-                    label: 'Prijave',
-                  ),
-                ],
-              ),
-      );
-    },
-  );
-  Widget _demoMenu(BuildContext context, AssetRepository repository) =>
-      repository is! MemoryAssetRepository
-      ? IconButton(
-          tooltip: 'Odjavi se',
-          onPressed: StudioConnection.maybeOf(context)?.onLogout,
-          icon: const Icon(Icons.logout),
-        )
-      : PopupMenuButton<String>(
-          tooltip: 'Demonstracione komande',
-          icon: const Icon(Icons.more_vert),
-          onSelected: (value) {
-            switch (value) {
-              case 'fail':
-                repository.failNext = true;
-                context.read<AssetBloc>().add(const LoadAssets());
-              case 'quota':
-                repository.exhaustQuota();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text(
-                      '20/20 mesta je zauzeto zahtevima drugih korisnika. Novi zahtev biće odbijen.',
-                    ),
-                  ),
-                );
-              case 'reset':
-                repository.reset();
-                context.read<AssetBloc>().add(const LoadAssets());
-              case 'transfer':
-                try {
-                  repository.demonstrateTransferQuota();
-                } on DomainException catch (e) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        '950 MB + 100 MB: ${errorMessage(e.error)}',
-                      ),
-                    ),
-                  );
-                }
-              case 'storage':
-                try {
-                  repository.demonstrateStorageQuota();
-                } on DomainException catch (e) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        '9.900 MB + 200 MB: ${errorMessage(e.error)}',
-                      ),
-                    ),
-                  );
-                }
-            }
-          },
-          itemBuilder: (_) => const [
-            PopupMenuItem(
-              value: 'fail',
-              child: Text('Izazovi grešku sledećeg zahteva'),
-            ),
-            PopupMenuItem(
-              value: 'quota',
-              child: Text('Popuni dnevnu kvotu (20/20)'),
-            ),
-            PopupMenuItem(
-              value: 'reset',
-              child: Text('Vrati demonstracione podatke'),
-            ),
-            PopupMenuItem(
-              value: 'transfer',
-              child: Text('Proveri kvotu prenosa (950 + 100 MB)'),
-            ),
-            PopupMenuItem(
-              value: 'storage',
-              child: Text('Proveri skladište (9.900 + 200 MB)'),
-            ),
-          ],
-        );
-}
 
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({
@@ -391,74 +102,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'RADNI PROSTOR ZA 3D IDEJE',
-                      style: TextStyle(
-                        color: accent,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 2,
+                    if (!widget.submissionsOnly) const StudioWelcome(),
+                    const SizedBox(height: 24),
+                    Text(
+                      widget.submissionsOnly
+                          ? 'Moje javne prijave'
+                          : 'My Assets',
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                    const SizedBox(height: 10),
-                    Wrap(
-                      alignment: WrapAlignment.spaceBetween,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      spacing: 20,
-                      runSpacing: 14,
-                      children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              widget.projectsOnly
-                                  ? 'Projekti i kolekcije'
-                                  : widget.submissionsOnly
-                                  ? 'Moje javne prijave'
-                                  : 'Tvoj sledeći svet počinje ovde.',
-                              style: Theme.of(context).textTheme.headlineMedium
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                    letterSpacing: -.8,
-                                  ),
-                            ),
-                            const SizedBox(height: 9),
-                            const Text(
-                              'Kreiraj, organizuj i podeli svoje 3D modele.',
-                              style: TextStyle(color: muted),
-                            ),
-                          ],
-                        ),
-                        FilledButton.icon(
-                          onPressed: () => context.go('/create'),
-                          icon: const Icon(Icons.add),
-                          label: const Text('Novi model'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 28),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: [
-                        _metric(
-                          'MOJI MODELI',
-                          '${state.assets.length}',
-                          Icons.view_in_ar_outlined,
-                        ),
-                        _metric(
-                          'SPREMNI ZA RAD',
-                          '${state.assets.where((a) => a.outputFileId != null).length}',
-                          Icons.check_circle_outline,
-                        ),
-                        _metric(
-                          'NA JAVNOJ PROVERI',
-                          '${state.assets.where((a) => a.lifecycle == AssetLifecycle.pendingReview).length}',
-                          Icons.public,
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 28),
+                    const SizedBox(height: 20),
                     TextField(
                       decoration: const InputDecoration(
                         hintText: 'Pretraži svoju biblioteku...',
@@ -553,7 +208,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           .clamp(1, 5),
                       mainAxisSpacing: 18,
                       crossAxisSpacing: 18,
-                      mainAxisExtent: 332,
+                      mainAxisExtent: 346,
                     ),
                     itemCount: assets.length,
                     itemBuilder: (context, index) =>
@@ -564,45 +219,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ],
         );
       },
-    ),
-  );
-  Widget _metric(String label, String value, IconData icon) => Container(
-    width: 205,
-    padding: const EdgeInsets.all(18),
-    decoration: BoxDecoration(
-      color: panel,
-      borderRadius: BorderRadius.circular(14),
-      border: Border.all(color: const Color(0xff273047)),
-    ),
-    child: Row(
-      children: [
-        Icon(icon, color: accent),
-        const SizedBox(width: 14),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                value,
-                style: const TextStyle(
-                  fontSize: 23,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: muted,
-                  fontSize: 9,
-                  letterSpacing: 1,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
     ),
   );
 }
@@ -648,11 +264,16 @@ class _AssetCard extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 5),
               child: Row(
                 children: [
-                  StatusBadge(asset.lifecycle),
-                  const Spacer(),
-                  Text(
-                    asset.category,
-                    style: const TextStyle(color: muted, fontSize: 10),
+                  Flexible(child: StatusBadge(asset.lifecycle)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      asset.category,
+                      textAlign: TextAlign.right,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: muted, fontSize: 10),
+                    ),
                   ),
                 ],
               ),
@@ -932,7 +553,7 @@ class _CreateAssetScreenState extends State<CreateAssetScreen> {
                           ),
                           const SizedBox(height: 15),
                           const Text(
-                            'Tekstualni unos još nije dostupan. Izaberi referentnu sliku.',
+                            'Text to 3D i Text to Image dostupni su u novom Workspace-u.',
                             style: TextStyle(color: muted, fontSize: 12),
                           ),
                         ],
