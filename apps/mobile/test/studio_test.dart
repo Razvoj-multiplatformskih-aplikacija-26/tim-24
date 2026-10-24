@@ -70,7 +70,7 @@ void main() {
     expect(find.text('Nema modela za ovaj izbor'), findsOneWidget);
     await tester.enterText(find.byType(TextField).first, '');
     await tester.pump();
-    await tester.tap(find.text('Novi model'));
+    await tester.tap(find.text('Privatni nacrt ↗'));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('Sačuvaj privatni nacrt'));
     await tester.tap(find.text('Sačuvaj privatni nacrt'));
@@ -168,6 +168,8 @@ void main() {
       300,
       scrollable: find.byType(Scrollable).first,
     );
+    await tester.ensureVisible(find.text('Kristalni mač'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Kristalni mač'));
     await tester.pumpAndSettle();
     expect(find.text('Zatraži generisanje'), findsOneWidget);

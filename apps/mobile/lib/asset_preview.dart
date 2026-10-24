@@ -29,9 +29,12 @@ class _StudioPreviewState extends State<StudioPreview> {
 
   void _load() {
     final api = StudioConnection.maybeOf(context)?.client;
-    if (api != null &&
-        widget.asset.previewFileId != null &&
-        fileId != widget.asset.previewFileId) {
+    if (api == null || widget.asset.previewFileId == null) {
+      fileId = null;
+      preview = null;
+      return;
+    }
+    if (fileId != widget.asset.previewFileId) {
       fileId = widget.asset.previewFileId;
       preview = api.fetchPreview(widget.asset);
     }
@@ -48,7 +51,7 @@ class _StudioPreviewState extends State<StudioPreview> {
       width: double.infinity,
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        color: const Color(0xff101623),
+        color: const Color(0xff191b18),
         borderRadius: BorderRadius.circular(14),
       ),
       child: preview == null

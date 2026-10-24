@@ -24,7 +24,9 @@ spisak uključuje `http://localhost:8082`. Za lokalni HTTP podesiti
 
 KT1 ima nezavisnu memorijsku biblioteku sa svim stanjima i unapred izabranim kreatorom. Meni sadrži grešku sledećeg zahteva, vraćanje početnih podataka i primere odbijanja globalnih kvota. Podaci se vraćaju na početne nakon novog pokretanja KT1 režima. Ilustracije u ovom režimu nisu AI rezultati.
 
-U API režimu prijavi isti nalog na telefonu i vebu. Slika se šalje pri čuvanju nacrta; generisanje se zasebno pokreće iz detalja. Server nastavlja posao kada se aplikacija zatvori. Pregled koristi stvarnu sliku rezultata; GLB preuzimanje u pregledaču čuva fajl, a Android otvara sistemski dijalog za deljenje/čuvanje. Interaktivni 3D viewport nije implementiran. Tekstualni unos nije aktivan.
+U API režimu prijavi isti nalog na telefonu i vebu. Slika se šalje pri čuvanju nacrta; postojeće serversko generisanje se zasebno pokreće iz detalja. Server nastavlja posao kada se aplikacija zatvori. Pregled sačuvanog API modela koristi stvarnu sliku rezultata; GLB preuzimanje u pregledaču čuva fajl, a Android otvara sistemski dijalog za deljenje/čuvanje.
+
+Novi `/workspace` ima Text to 3D, Image to 3D i Text to Image tokove, izbor modela i lokalni interaktivni 3D viewport sa primerima. Generate za sada pravi demonstracioni pregled; stvarna tekstualna inferencija i Modal nisu povezani. Detalji, tačke povezivanja i lokalni pregled landing stranice su u [opisu redizajna](../../docs/redesign.md).
 
 Na Androidu SQLite trajno čuva biblioteku i outbox u jednoj transakciji. Izmeni naziv, opis ili omiljeni model bez mreže; status prikazuje izmene koje čekaju. Posle ponovnog povezivanja koristi „Sinhronizuj“ ili sačekaj automatsku proveru. Konflikt zahteva izbor serverske verzije ili izričito ponovno primenjivanje lokalne. Tokeni se čuvaju u Android zaštićenom skladištu, a veb obnavlja sesiju kroz HttpOnly kolačić servera.
 

@@ -12,6 +12,8 @@ import 'studio_theme.dart';
 import 'studio_screens.dart';
 import 'projects_screen.dart';
 import 'profile_screen.dart';
+import 'workspace_screen.dart';
+import 'generation_setup.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -91,6 +93,18 @@ class _HedrionStudioState extends State<HedrionStudio> {
       GoRoute(path: '/', builder: (context, state) => const LibraryScreen()),
       GoRoute(
         path: '/create',
+        builder: (context, state) => WorkspaceScreen(
+          flow: GenerationFlow.fromRoute(state.uri.queryParameters['flow']),
+        ),
+      ),
+      GoRoute(
+        path: '/workspace',
+        builder: (context, state) => WorkspaceScreen(
+          flow: GenerationFlow.fromRoute(state.uri.queryParameters['flow']),
+        ),
+      ),
+      GoRoute(
+        path: '/draft',
         builder: (context, state) => const CreateAssetScreen(),
       ),
       GoRoute(
