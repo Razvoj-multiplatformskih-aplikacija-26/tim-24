@@ -85,45 +85,42 @@ class _ModerationScreenState extends State<ModerationScreen> {
         asset.lifecycle != AssetLifecycle.pendingReview) {
       return;
     }
-    final controller = TextEditingController();
-    final form = GlobalKey<FormState>();
-    final result = await showDialog<bool>(
+    final reasonField = GlobalKey<FormFieldState<String>>();
+    final reason = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Odbij javnu prijavu'),
         content: SizedBox(
           width: 430,
-          child: Form(
-            key: form,
-            child: TextFormField(
-              autofocus: true,
-              controller: controller,
-              maxLines: 3,
-              maxLength: 1000,
-              decoration: const InputDecoration(labelText: 'Razlog odbijanja'),
-              validator: (value) {
-                final validation = validateTransition(
-                  asset,
-                  AssetLifecycle.rejected,
-                  MemoryModerationRepository.actor,
-                  reason: value,
-                );
-                return validation.isValid
-                    ? null
-                    : errorMessage(validation.error!);
-              },
-            ),
+          child: TextFormField(
+            key: reasonField,
+            autofocus: true,
+            maxLines: 3,
+            maxLength: 1000,
+            decoration: const InputDecoration(labelText: 'Razlog odbijanja'),
+            validator: (value) {
+              final validation = validateTransition(
+                asset,
+                AssetLifecycle.rejected,
+                MemoryModerationRepository.actor,
+                reason: value,
+              );
+              return validation.isValid
+                  ? null
+                  : errorMessage(validation.error!);
+            },
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(context),
             child: const Text('Odustani'),
           ),
           FilledButton(
             onPressed: () {
-              if (form.currentState!.validate()) {
-                Navigator.pop(context, true);
+              final field = reasonField.currentState!;
+              if (field.validate()) {
+                Navigator.pop(context, field.value!.trim());
               }
             },
             child: const Text('Odbij prijavu'),
@@ -131,18 +128,17 @@ class _ModerationScreenState extends State<ModerationScreen> {
         ],
       ),
     );
-    if (result == true && mounted) {
+    if (reason != null && mounted) {
       context.read<AssetBloc>().add(
         TransitionAsset(
           asset.id,
           AssetLifecycle.rejected,
           baseRevision: asset.revision,
-          reason: controller.text.trim(),
+          reason: reason,
           idempotencyKey: '${asset.id.value}-${asset.revision}-reject',
         ),
       );
     }
-    controller.dispose();
   }
 
   @override

@@ -136,10 +136,15 @@ final class PublicSite {
   }
 
   Future<shelf.Response> _landing(shelf.Request request) async {
-    final featured = await catalog.list(limit: 4);
+    CatalogPage? featured;
+    try {
+      featured = await catalog.list(limit: 12);
+    } on CatalogFailure {
+      // Keep the entry into the studio available when the public API is down.
+    }
     return _page(
       request,
-      title: 'Hedrion — biblioteka 3D modela za igre',
+      title: 'Hedrion — Your next dimension',
       description:
           'Istražite odobrene 3D modele zajednice. Pregledajte rekvizite, pronađite licencu i preuzmite GLB kada autor dozvoli.',
       content: [
@@ -148,54 +153,152 @@ final class PublicSite {
           [
             _el(
               'span',
-              [_text('OD IDEJE DO VAŠEG SLEDEĆEG SVETA')],
+              [_text('A LITTLE IMAGINATION. A NEW DIMENSION.')],
               {'class': 'eyebrow'},
             ),
             _el('h1', [
-              _text('Pronađite oblik\n'),
-              _el('em', [_text('sledeće ideje.')]),
+              _text('What will you create '),
+              _el('em', [_text('in 3D?')]),
             ]),
             _paragraph(
-              'Biblioteka 3D modela za vaše igre. Istražite radove zajednice, proverite licencu i pronađite rekvizit za svoj sledeći projekat.',
+              'Od prve ideje do sledećeg sveta. Tvoj prostor za stvaranje.',
             ),
             _el(
               'div',
               [
-                _link('Istražite biblioteku →', '/assets', classes: 'button'),
                 _link(
-                  'Otvorite svoj studio',
-                  config.studioOrigin.toString(),
-                  classes: 'button secondary',
+                  '✦  3D Model',
+                  _studioUrl('text-to-3d'),
+                  classes: 'creation-tab active',
+                ),
+                _link(
+                  '▧  Image',
+                  _studioUrl('text-to-image'),
+                  classes: 'creation-tab',
                 ),
               ],
-              {'class': 'actions'},
+              {'class': 'creation-tabs', 'aria-label': 'Tip kreiranja'},
+            ),
+            _el(
+              'a',
+              [
+                _icon('image'),
+                _el('strong', [_text('Drop an idea. Bring it to life.')]),
+                _el('span', [_text('Počni od fotografije ili skice')]),
+                _el('span', [_text('↗')], {'class': 'upload-arrow'}),
+              ],
+              {
+                'class': 'hero-upload',
+                'href': _studioUrl('image-to-3d'),
+                'aria-label': 'Postavi sliku i otvori studio',
+              },
+            ),
+            _el(
+              'div',
+              [
+                _el(
+                  'div',
+                  [
+                    _link('Text to 3D', _studioUrl('text-to-3d')),
+                    _el('span', [_text('·')]),
+                    _link('Image to 3D', _studioUrl('image-to-3d')),
+                    _el('span', [_text('·')]),
+                    _link('Text to Image', _studioUrl('text-to-image')),
+                  ],
+                  {'class': 'hero-flow-links'},
+                ),
+                _link(
+                  '✦  Start creating',
+                  _studioUrl('text-to-3d'),
+                  classes: 'button',
+                ),
+              ],
+              {'class': 'hero-bottom'},
+            ),
+            _paragraph(
+              'Prijavi se i sačuvaj svoje ideje u privatnom studiju.',
+              classes: 'hero-note',
             ),
           ],
           {'class': 'hero'},
         ),
-        _categoryLinks(),
-        _sectionTitle('Iz biblioteke zajednice', 'Odobreno za javno deljenje'),
-        if (featured.assets.isEmpty)
-          _notice(
-            'Biblioteka čeka prve radove',
-            'Ovde će se pojaviti modeli koje autori predlože i moderator odobri. Privatni modeli ostaju u studiju.',
-          )
-        else
-          _grid(featured.assets),
         _el(
-          'div',
+          'section',
           [
-            _link(
-              'Pogledajte sve modele →',
-              '/assets',
-              classes: 'button secondary',
+            _el(
+              'div',
+              [
+                _el(
+                  'div',
+                  [
+                    _el('h2', [_text('Community')]),
+                    _el('span', [_text('Made of imagination.')]),
+                  ],
+                  {'class': 'community-title'},
+                ),
+                _categoryLinks(),
+                _link(
+                  '⌕  Pretraži modele',
+                  '/assets',
+                  classes: 'community-search',
+                ),
+                _link('＋  Create', _studioUrl('text-to-3d'), classes: 'button'),
+              ],
+              {'class': 'community-toolbar'},
             ),
+            _el(
+              'div',
+              [
+                _el('span', [_text('Discover something worth creating.')]),
+                _link('Svi objavljeni modeli ↗', '/assets'),
+              ],
+              {'class': 'community-caption'},
+            ),
+            if (featured == null)
+              _notice(
+                'Biblioteka je privremeno nedostupna',
+                'Studio je dostupan. Objavljene modele pokušaj da učitaš ponovo.',
+                href: '/',
+                action: 'Pokušaj ponovo',
+              )
+            else if (featured.assets.isEmpty)
+              _notice(
+                'Biblioteka čeka prve radove',
+                'Ovde će se pojaviti modeli koje autori predlože i moderator odobri. Privatni modeli ostaju u studiju.',
+              )
+            else
+              _grid(featured.assets),
           ],
-          {'class': 'actions'},
+          {'class': 'community', 'id': 'community'},
         ),
       ],
     );
   }
+
+  String _studioUrl(String flow) =>
+      config.studioOrigin.replace(fragment: '/workspace?flow=$flow').toString();
+
+  Component _icon(String name) => _el(
+    'svg',
+    [
+      _el('rect', [], {
+        'x': '3',
+        'y': '3',
+        'width': '18',
+        'height': '18',
+        'rx': '4',
+      }),
+      _el('circle', [], {'cx': '8.5', 'cy': '8.5', 'r': '1.5'}),
+      _el('path', [], {'d': 'm3 17 5-5 4 4 4-6 5 7'}),
+    ],
+    {
+      'viewBox': '0 0 24 24',
+      'fill': 'none',
+      'stroke': 'currentColor',
+      'stroke-width': '1.4',
+      'aria-hidden': 'true',
+    },
+  );
 
   Future<shelf.Response> _library(
     shelf.Request request, {
@@ -768,7 +871,7 @@ final class PublicSite {
                     [_text('⬡')],
                     {'class': 'mark', 'aria-hidden': 'true'},
                   ),
-                  _text('HEDRION'),
+                  _text('hedrion'),
                 ],
                 {
                   'href': '/',
@@ -779,11 +882,21 @@ final class PublicSite {
               _el(
                 'div',
                 [
-                  _link('Biblioteka', '/assets'),
+                  _link('Community', '/assets', classes: 'nav-community'),
+                  _link(
+                    'Workspace ↗',
+                    _studioUrl('text-to-3d'),
+                    classes: 'nav-workspace',
+                  ),
                   _link('O projektu', '/about'),
                   _link(
-                    'Otvorite studio ↗',
-                    config.studioOrigin.toString(),
+                    'Prijavi se',
+                    _studioUrl('text-to-3d'),
+                    classes: 'nav-login',
+                  ),
+                  _link(
+                    '✦  Start creating',
+                    _studioUrl('text-to-3d'),
                     classes: 'button',
                   ),
                 ],

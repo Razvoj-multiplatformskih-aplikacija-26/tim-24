@@ -9,6 +9,8 @@ final class MemoryAssetRepository
     DateTime Function()? clock,
   }) : _clock = clock ?? DateTime.now {
     reset();
+
+    ///Seed data
   }
   static const actor = Actor(
     id: UserId('creator-demo'),
@@ -22,6 +24,7 @@ final class MemoryAssetRepository
   int _counter = 100;
   final Map<String, AssetId> _replays = {};
   final List<Map<String, dynamic>> projects = [];
+
   void demonstrateTransferQuota() => validateTransferQuota(
     transferredBytes: 950000000,
     reservedBytes: 0,
@@ -61,8 +64,15 @@ final class MemoryAssetRepository
             a.acceptedAt.toUtc().day == _clock().toUtc().day,
       )
       .length;
+
+  //Zove se ogre
   void reset() {
-    _assets = seedAssets(ownerId: actor.id, now: _clock());
+    //Fejk 16 admissions za naseg demo korisnika, koje su kao napravljene pre
+    _assets = seedAssets(
+      ownerId: actor.id,
+      now: _clock(),
+    ); //Funkcija koja kreira nase assete, pravi 16 objekata tipa asset
+    //Fejk 18 zahteva koji su napravljeni trenutno da popune 18/20 dnevnu kvotu
     _admissions = seedAdmissions(_clock(), count: 18);
     _replays.clear();
     projects.clear();
@@ -99,6 +109,7 @@ final class MemoryAssetRepository
     return asset;
   }
 
+  ///loadAssets definicija
   @override
   Future<List<Asset>> loadAssets() async {
     await _delay();
