@@ -49,4 +49,17 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('legacy draft link opens the workspace', (tester) async {
+    await tester.pumpWidget(
+      HedrionStudio(
+        repository: MemoryAssetRepository(latency: Duration.zero),
+        initialLocation: '/draft',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('generation-prompt')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

@@ -70,28 +70,35 @@ void main() {
     expect(find.text('Nema modela za ovaj izbor'), findsOneWidget);
     await tester.enterText(find.byType(TextField).first, '');
     await tester.pump();
-    await tester.tap(find.text('Privatni nacrt ↗'));
+    await tester.tap(find.text('Novi model'));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Sačuvaj privatni nacrt'));
-    await tester.tap(find.text('Sačuvaj privatni nacrt'));
+    final prompt = find.byKey(const Key('generation-prompt'));
+    await tester.enterText(prompt, 'AB');
+    await tester.tap(find.text('Zatraži demo generisanje'));
     await tester.pumpAndSettle();
-    expect(find.text('Naziv mora imati od 3 do 60 znakova.'), findsOneWidget);
-    await tester.enterText(find.byType(TextFormField).first, 'Test rekvizit');
-    await tester.enterText(
-      find.byKey(const Key('create-tags')),
-      'drvo, igra, drvo',
-    );
-    await tester.ensureVisible(find.text('Sačuvaj privatni nacrt'));
-    await tester.tap(find.text('Sačuvaj privatni nacrt'));
+    expect(find.text('Opiši svoju ideju u najmanje 3 znaka.'), findsOneWidget);
+    expect((await repository.loadAssets()).length, 16);
+    await tester.enterText(prompt, 'Test rekvizit\nDrveni model za igru');
+    final details = find.text('Detalji modela (opciono)');
+    await tester.ensureVisible(details);
+    await tester.tap(details);
+    await tester.pumpAndSettle();
+    final project = find.widgetWithText(TextField, 'Projekat / kolekcija');
+    await tester.ensureVisible(project);
+    await tester.enterText(project, 'KT1 kolekcija');
+    final tags = find.byKey(const Key('draft-tags'));
+    await tester.ensureVisible(tags);
+    await tester.enterText(tags, 'drvo, igra, drvo');
+    await tester.tap(find.text('Zatraži demo generisanje'));
     await tester.pumpAndSettle();
     expect(find.text('Test rekvizit'), findsOneWidget);
     expect((await repository.loadAssets()).length, 17);
-    expect(
-      (await repository.loadAssets())
-          .singleWhere((a) => a.title == 'Test rekvizit')
-          .tags,
-      ['drvo', 'igra'],
+    final asset = (await repository.loadAssets()).singleWhere(
+      (asset) => asset.title == 'Test rekvizit',
     );
+    expect(asset.tags, ['drvo', 'igra']);
+    expect(asset.projectId, repository.projects.single['id']);
+    expect(asset.lifecycle, AssetLifecycle.queued);
   });
   test(
     'publication options and collection removal preserve private model',

@@ -1,13 +1,17 @@
 import 'dart:typed_data';
 import 'package:blocs/blocs.dart';
 import 'package:domain/domain.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:hedrion_api_client/hedrion_api_client.dart';
 import 'package:image_picker/image_picker.dart';
 import 'app_connection.dart';
+import 'asset_fields.dart';
 import 'asset_preview.dart';
 import 'generation_setup.dart';
+import 'memory_asset_repository.dart';
 import 'mesh_scene.dart';
 import 'model_viewport.dart';
 import 'studio_chrome.dart';
@@ -28,6 +32,9 @@ class WorkspaceScreen extends StatefulWidget {
 class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final prompt = TextEditingController();
   final search = TextEditingController();
+  final title = TextEditingController();
+  final project = TextEditingController();
+  final tags = TextEditingController();
   final prompts = <GenerationFlow, String>{};
   late GenerationFlow flow = widget.flow;
   SampleModel selected = SampleModel.sentinel;
@@ -35,15 +42,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final previews = <GenerationPreview>[];
   GenerationPreview? activePreview;
   Asset? activeAsset;
+  Asset? _textDraft;
+  HedrionApiClient? _api;
+  Future<Map<String, dynamic>>? _capabilities;
   late String model = widget.flow == GenerationFlow.textToImage
       ? 'hedrion-image'
       : 'hedrion-3d';
   String quality = 'Standard';
+  String category = 'props';
   String? imageName, error;
   Uint8List? imageBytes;
   bool pose = false, enhance = true, textured = true, grid = false;
-  bool generating = false, saving = false, mine = false;
+  bool previewing = false, saving = false, mine = false;
   int seed = 42, resetKey = 0, mobileTab = 0;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final api = StudioConnection.maybeOf(context)?.client;
+    if (api != _api) {
+      _api = api;
+      _capabilities = null;
+    }
+  }
 
   @override
   void didUpdateWidget(WorkspaceScreen oldWidget) {
@@ -55,6 +76,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void dispose() {
     prompt.dispose();
     search.dispose();
+    title.dispose();
+    project.dispose();
+    tags.dispose();
     super.dispose();
   }
 
@@ -121,29 +145,28 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     imageBytes: imageBytes,
   );
 
-  bool _validate() {
-    if (flow == GenerationFlow.imageTo3d && imageBytes == null) {
-      setState(() {
-        error = 'Dodaj referentnu sliku da nastaviš.';
-        mobileTab = 0;
-      });
-      return false;
+  bool _hasRequiredReference(GenerationSetup setup) {
+    if (setup.flow != GenerationFlow.imageTo3d || setup.imageBytes != null) {
+      return true;
     }
-    if (flow != GenerationFlow.imageTo3d && prompt.text.trim().length < 3) {
-      setState(() {
-        error = 'Opiši svoju ideju u najmanje 3 znaka.';
-        mobileTab = 0;
-      });
-      return false;
-    }
-    return true;
+    setState(() => error = 'Dodaj referentnu sliku da nastaviš.');
+    return false;
   }
 
-  Future<void> _generate() async {
-    if (!_validate()) return;
+  bool _hasRequiredPrompt(GenerationSetup setup) {
+    if (setup.flow == GenerationFlow.imageTo3d ||
+        setup.prompt.runes.length >= 3) {
+      return true;
+    }
+    setState(() => error = 'Opiši svoju ideju u najmanje 3 znaka.');
+    return false;
+  }
+
+  Future<void> _showDemoPreview() async {
     final setup = _setup();
+    if (!_hasRequiredReference(setup) || !_hasRequiredPrompt(setup)) return;
     setState(() {
-      generating = true;
+      previewing = true;
       error = null;
     });
     try {
@@ -157,54 +180,111 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             ? ViewportMaterial.studio
             : ViewportMaterial.clay;
         activeAsset = null;
-        generating = false;
+        previewing = false;
         mobileTab = 1;
         mine = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Demo pregled je spreman. AI generisanje ćemo povezati u sledećoj fazi.',
-          ),
-        ),
-      );
     } catch (_) {
       if (mounted) {
         setState(() {
-          generating = false;
+          previewing = false;
           error = 'Pregled nije uspeo. Pokušaj ponovo.';
         });
       }
     }
   }
 
-  Future<void> _saveDraft() async {
-    if (!_validate()) return;
+  Future<void> _submitCreation() async {
+    if (saving) return;
+    final setup = _setup();
+    final queueText = setup.flow == GenerationFlow.textTo3d;
+    if (!_hasRequiredReference(setup) ||
+        (queueText && !_hasRequiredPrompt(setup))) {
+      return;
+    }
+    final suggestedTitle = setup.prompt.isEmpty
+        ? setup.imageName ?? ''
+        : setup.prompt.split('\n').first;
+    final draftTitle = title.text.trim().isEmpty
+        ? String.fromCharCodes(suggestedTitle.runes.take(60))
+        : title.text;
+    final draftCategory = category;
+    final draftTags = parseTags(tags.text);
+    final projectName = project.text.trim();
+    AssetDraft draft([String? projectId]) => AssetDraft(
+      title: draftTitle,
+      description: setup.prompt,
+      category: draftCategory,
+      tags: draftTags,
+      projectId: projectId,
+    );
+    final validation = validateDraft(draft());
+    if (!validation.isValid) {
+      setState(() => error = errorMessage(validation.error!));
+      return;
+    }
     setState(() {
       saving = true;
       error = null;
     });
+    final repository = context.read<AssetRepository>();
+    final bloc = context.read<AssetBloc>();
+    final connection = StudioConnection.maybeOf(context);
+    final api = connection?.client;
+    Asset? asset;
     try {
-      final setup = _setup();
-      // Image concepts stay in this session until an image asset type is added.
-      if (setup.flow == GenerationFlow.textToImage) {
-        setState(() {
-          error =
-              'Image koncept je u istoriji sesije. Za privatni 3D nacrt izaberi Text to 3D ili Image to 3D.';
-          mobileTab = 0;
-        });
-        return;
+      if (queueText && connection?.offline?.online == false) {
+        throw const DomainException(DomainError(ErrorCode.unavailable));
       }
-      var name = setup.prompt.isEmpty
-          ? setup.imageName ?? 'Novi 3D model'
-          : setup.prompt.split('\n').first;
-      if (name.length > 60) name = name.substring(0, 60);
-      final repository = context.read<AssetRepository>();
-      final api = StudioConnection.maybeOf(context)?.client;
-      final asset = await repository.createAsset(
-        AssetDraft(title: name, description: setup.prompt),
-      );
-      if (api != null &&
+      final projectId = projectName.isEmpty
+          ? null
+          : await _findOrCreateProject(projectName);
+      if (!mounted) return;
+      final previous = queueText ? _textDraft : null;
+      if (previous == null) {
+        asset = await repository.createAsset(draft(projectId));
+      } else if (previous.title != draftTitle.trim() ||
+          previous.description != setup.prompt ||
+          previous.category != draftCategory ||
+          previous.projectId != projectId ||
+          !listEquals(previous.tags, draftTags)) {
+        final onlineRepository = connection?.offline?.remote ?? repository;
+        asset = await onlineRepository.updateAsset(
+          previous.copyWith(
+            title: draftTitle,
+            description: setup.prompt,
+            category: draftCategory,
+            projectId: projectId,
+            clearProject: projectId == null,
+            tags: draftTags,
+          ),
+          previous.revision,
+        );
+      } else {
+        asset = previous;
+      }
+
+      if (queueText) {
+        _textDraft = asset;
+        final key = '${asset.id.value}-${asset.revision}-text-to-3d';
+        if (api == null) {
+          await repository.transitionAsset(
+            asset.id,
+            AssetLifecycle.queued,
+            baseRevision: asset.revision,
+            idempotencyKey: key,
+          );
+        } else {
+          await api.generate(
+            asset.id,
+            baseRevision: asset.revision,
+            idempotencyKey: key,
+            inputType: 'text_to_3d',
+            sourcePrompt: asset.description,
+          );
+        }
+        _textDraft = null;
+      } else if (api != null &&
           setup.flow == GenerationFlow.imageTo3d &&
           setup.imageBytes != null) {
         try {
@@ -226,18 +306,41 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         }
       }
       if (mounted) {
-        context.read<AssetBloc>().add(const LoadAssets());
         context.go('/assets/${asset.id.value}');
       }
     } on DomainException catch (e) {
       if (mounted) setState(() => error = errorMessage(e.error));
     } catch (_) {
       if (mounted) {
-        setState(() => error = 'Nacrt nije sačuvan. Pokušaj ponovo.');
+        setState(() {
+          error = queueText
+              ? 'Zahtev nije poslat. Pokušaj ponovo.'
+              : 'Nacrt nije sačuvan. Pokušaj ponovo.';
+        });
       }
     } finally {
+      if (asset != null && !bloc.isClosed) bloc.add(const LoadAssets());
       if (mounted) setState(() => saving = false);
     }
+  }
+
+  Future<String> _findOrCreateProject(String name) async {
+    final api = StudioConnection.maybeOf(context)?.client;
+    if (api == null) {
+      final repository =
+          context.read<AssetRepository>() as MemoryAssetRepository;
+      final existing = repository.projects.where((p) => p['name'] == name);
+      return (existing.firstOrNull ?? repository.saveProject(name))['id']
+          as String;
+    }
+    final records = await api.request('GET', '/api/v1/projects');
+    final existing = (records['projects'] as List)
+        .cast<Map<String, dynamic>>()
+        .where((p) => p['name'] == name);
+    final record =
+        existing.firstOrNull ??
+        await api.request('POST', '/api/v1/projects', body: {'name': name});
+    return record['id'] as String;
   }
 
   @override
@@ -314,15 +417,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               const Spacer(),
               IconButton(
                 tooltip: 'Novi unos',
-                onPressed: generating || saving
+                onPressed: previewing || saving
                     ? null
                     : () => setState(() {
                         prompt.clear();
+                        title.clear();
+                        project.clear();
+                        tags.clear();
+                        category = 'props';
                         imageBytes = null;
                         imageName = null;
                         error = null;
                         activePreview = null;
                         activeAsset = null;
+                        _textDraft = null;
                       }),
                 icon: const Icon(
                   Icons.add_box_outlined,
@@ -506,6 +614,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     enhance,
                     (v) => setState(() => enhance = v),
                   ),
+                if (flow != GenerationFlow.textToImage) _modelDetails(),
                 const SizedBox(height: 6),
                 ExpansionTile(
                   tilePadding: EdgeInsets.zero,
@@ -529,18 +638,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     ),
                   ],
                 ),
-                if (error != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 10),
-                    child: Text(
-                      error!,
-                      key: const Key('generation-error'),
-                      style: const TextStyle(
-                        color: Color(0xffffb6a5),
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
               ],
             ),
           ),
@@ -553,69 +650,142 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           ),
           child: Column(
             children: [
-              const Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.bolt_rounded, size: 14, color: accent),
-                  SizedBox(width: 5),
-                  Flexible(
-                    child: Text(
-                      'Local preview · No credits needed',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 10, color: muted),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                height: 43,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [accent, Color(0xffdeee92), Color(0xffff9dcb)],
-                  ),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: FilledButton.icon(
-                  key: const Key('generate-button'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    foregroundColor: const Color(0xff171b12),
-                    disabledBackgroundColor: Colors.transparent,
-                    disabledForegroundColor: const Color(0xff454b3d),
-                    padding: EdgeInsets.zero,
-                  ),
-                  onPressed: generating || saving ? null : _generate,
-                  icon: generating
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.black,
-                          ),
-                        )
-                      : const Icon(Icons.auto_awesome, size: 19),
-                  label: Text(
-                    generating ? 'Creating preview…' : 'Generate',
+              if (error case final message?)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    message,
+                    key: const Key('generation-error'),
+                    textAlign: TextAlign.center,
                     style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 14,
+                      color: Color(0xffffb6a5),
+                      fontSize: 12,
                     ),
                   ),
                 ),
+              if (flow == GenerationFlow.textTo3d) ...[
+                _textGenerationAction(),
+                const SizedBox(height: 4),
+              ],
+              if (flow == GenerationFlow.imageTo3d) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: previewing || saving ? null : _submitCreation,
+                    icon: const Icon(Icons.bookmark_add_outlined, size: 19),
+                    label: Text(saving ? 'Čuvanje…' : 'Sačuvaj nacrt'),
+                  ),
+                ),
+                const SizedBox(height: 4),
+              ],
+              TextButton.icon(
+                onPressed: previewing || saving ? null : _showDemoPreview,
+                icon: const Icon(Icons.view_in_ar_outlined, size: 18),
+                label: Text(
+                  previewing ? 'Učitavanje uzorka…' : 'Prikaži demo uzorak',
+                ),
               ),
-              const SizedBox(height: 9),
               const Text(
-                'Demo only · AI connection coming next',
-                style: TextStyle(fontSize: 9, color: muted),
+                'Unapred pripremljen uzorak za probu prikaza.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 10, color: muted),
               ),
             ],
           ),
         ),
       ],
     ),
+  );
+
+  Widget _textGenerationAction() {
+    Widget requestButton({required bool demo}) => SizedBox(
+      width: double.infinity,
+      child: FilledButton.icon(
+        onPressed: previewing || saving ? null : _submitCreation,
+        icon: const Icon(Icons.auto_awesome, size: 19),
+        label: Text(
+          saving
+              ? 'Slanje zahteva…'
+              : demo
+              ? 'Zatraži demo generisanje'
+              : 'Generiši 3D model',
+        ),
+      ),
+    );
+    final api = _api;
+    if (api == null) return requestButton(demo: true);
+    return FutureBuilder(
+      future: _capabilities ??= api.request('GET', '/api/v1/capabilities'),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Text('Provera dostupnosti generisanja…');
+        }
+        if (snapshot.hasError) {
+          return TextButton(
+            onPressed: () => setState(() => _capabilities = null),
+            child: const Text('Proveri dostupnost ponovo'),
+          );
+        }
+        if (snapshot.data?['textTo3d'] != true) {
+          return const Text(
+            'Text to 3D još nije dostupan. Možeš da koristiš Image to 3D.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: muted),
+          );
+        }
+        return requestButton(demo: snapshot.data?['demo'] == true);
+      },
+    );
+  }
+
+  Widget _modelDetails() => ExpansionTile(
+    tilePadding: EdgeInsets.zero,
+    childrenPadding: const EdgeInsets.only(bottom: 10),
+    shape: const Border(),
+    collapsedShape: const Border(),
+    title: Text(
+      flow == GenerationFlow.textTo3d
+          ? 'Detalji modela (opciono)'
+          : 'Detalji nacrta (opciono)',
+      style: const TextStyle(fontSize: 12, color: muted),
+    ),
+    children: [
+      TextField(
+        controller: title,
+        decoration: const InputDecoration(
+          labelText: 'Naziv',
+          hintText: 'Preuzima se iz prompta',
+        ),
+      ),
+      const SizedBox(height: 12),
+      DropdownButtonFormField<String>(
+        key: ValueKey(category),
+        initialValue: category,
+        decoration: const InputDecoration(labelText: 'Kategorija'),
+        items: const [
+          DropdownMenuItem(value: 'props', child: Text('Rekviziti')),
+          DropdownMenuItem(value: 'weapons', child: Text('Oružje')),
+          DropdownMenuItem(value: 'furniture', child: Text('Nameštaj')),
+          DropdownMenuItem(value: 'nature', child: Text('Priroda')),
+          DropdownMenuItem(value: 'architecture', child: Text('Arhitektura')),
+        ],
+        onChanged: (value) => setState(() => category = value!),
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        controller: project,
+        decoration: const InputDecoration(labelText: 'Projekat / kolekcija'),
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        key: const Key('draft-tags'),
+        controller: tags,
+        decoration: const InputDecoration(
+          labelText: 'Oznake',
+          helperText: 'Odvoji oznake zarezom.',
+        ),
+      ),
+    ],
   );
 
   Widget _uploadBox() => Column(
@@ -737,7 +907,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               if (showAssetsButton)
                 _tool(
                   Icons.collections_outlined,
-                  'My generations',
+                  'Modeli i demo uzorci',
                   () => showModalBottomSheet<void>(
                     context: context,
                     isScrollControlled: true,
@@ -816,7 +986,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       const SizedBox(height: 7),
                       Text(
                         activeAsset != null
-                            ? '2D thumbnail'
+                            ? lifecycleLabel(activeAsset!.lifecycle)
                             : 'Faces             ${SampleScene(selected).faces.length}',
                         style: const TextStyle(
                           fontSize: 10,
@@ -825,7 +995,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                       const SizedBox(height: 7),
                       Text(
-                        activeAsset == null ? 'LOCAL SAMPLE' : 'SAVED ASSET',
+                        activeAsset == null ? 'DEMO UZORAK' : 'SAVED ASSET',
                         style: const TextStyle(
                           fontSize: 8,
                           letterSpacing: 1.4,
@@ -860,7 +1030,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   ),
                 ),
               ),
-              if (generating)
+              if (previewing)
                 const Positioned.fill(
                   child: ColoredBox(
                     color: Color(0x99141512),
@@ -912,24 +1082,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                             onPressed: () =>
                                 context.go('/assets/${activeAsset!.id.value}'),
                             child: const Text('Detalji'),
-                          )
-                        else
-                          FilledButton.icon(
-                            onPressed: generating || saving ? null : _saveDraft,
-                            style: FilledButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                            ),
-                            icon: const Icon(
-                              Icons.bookmark_add_outlined,
-                              size: 16,
-                            ),
-                            label: Text(
-                              saving ? 'Saving…' : 'Sačuvaj nacrt',
-                              style: const TextStyle(fontSize: 11),
-                            ),
                           ),
                       ],
                     ),
@@ -949,7 +1101,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               Expanded(
                 child: Text(
                   activeAsset != null
-                      ? 'Saved preview · Open details for GLB'
+                      ? 'Otvori detalje modela'
                       : flow == GenerationFlow.textToImage
                       ? '2D concept · Local sample'
                       : 'Drag to orbit · Scroll to zoom',
@@ -1059,7 +1211,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         onChanged: (_) => setState(() {}),
         style: const TextStyle(fontSize: 11),
         decoration: const InputDecoration(
-          hintText: 'Search my generations',
+          hintText: 'Pretraži modele i uzorke',
           prefixIcon: Icon(Icons.search, size: 18),
           contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 11),
         ),
@@ -1108,10 +1260,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 itemCount: assets.length,
                 separatorBuilder: (_, i) => const SizedBox(height: 12),
                 itemBuilder: (context, i) => InkWell(
-                  onTap: () => setState(() {
-                    activeAsset = assets[i];
-                    mobileTab = 1;
-                  }),
+                  onTap: () {
+                    final asset = assets[i];
+                    if (asset.previewFileId == null) {
+                      context.go('/assets/${asset.id.value}');
+                      return;
+                    }
+                    setState(() {
+                      activeAsset = asset;
+                      mobileTab = 1;
+                    });
+                  },
                   borderRadius: BorderRadius.circular(12),
                   child: Container(
                     padding: const EdgeInsets.all(10),
@@ -1133,8 +1292,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontSize: 11),
                         ),
-                        const SizedBox(height: 10),
-                        StudioPreview(asset: assets[i], height: 150),
+                        if (assets[i].previewFileId != null) ...[
+                          const SizedBox(height: 10),
+                          StudioPreview(asset: assets[i], height: 150),
+                        ],
                         const SizedBox(height: 8),
                         StatusBadge(assets[i].lifecycle),
                       ],
@@ -1215,7 +1376,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 12),
                   child: Text(
-                    'Session previews are temporary. Save a draft to keep your idea in My Assets.',
+                    'Demo pregledi su privremeni. U kartici Create sačuvaj svoju ideju kao nacrt.',
                     style: TextStyle(color: muted, fontSize: 10, height: 1.7),
                   ),
                 ),
@@ -1338,7 +1499,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         for (var i = 0; i < labels.length; i++)
           Expanded(
             child: InkWell(
-              onTap: generating || saving ? null : () => onChanged(i),
+              onTap: previewing || saving ? null : () => onChanged(i),
               borderRadius: BorderRadius.circular(6),
               child: Container(
                 padding: const EdgeInsets.symmetric(vertical: 9),

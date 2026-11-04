@@ -16,11 +16,16 @@ import 'workspace_screen.dart';
 import 'generation_setup.dart';
 
 void main() {
+  //Priprema veze izmedju flutter koda i platforme(android)
   WidgetsFlutterBinding.ensureInitialized();
+
+  //runApp je Flutter funkcija kojoj dajemo pocetni widget aplikacija
+  //Widget je kao react komponenta.
   runApp(
+    //Provera da li je hedrion_mode env demo ili api, demo je bez backend za prvu Kt
     const String.fromEnvironment('HEDRION_MODE', defaultValue: 'demo') == 'api'
         ? const LiveStudio()
-        : const HedrionStudio(),
+        : const HedrionStudio(), //Demo
   );
 }
 
@@ -38,6 +43,7 @@ class HedrionStudio extends StatefulWidget {
   final OfflineAssetRepository? offline;
   final VoidCallback? onLogout;
   final String? initialLocation;
+
   @override
   State<HedrionStudio> createState() => _HedrionStudioState();
 }
@@ -85,7 +91,16 @@ class _HedrionStudioState extends State<HedrionStudio> {
 
   late final AssetRepository repository =
       widget.repository ?? MemoryAssetRepository();
+  // Ako repository nije prosledjen napravi novi memoryAssetRepository(),
+  // u nasem demo slucaju zove bira se memoryassetrepo
+  // zove se reset()
+
+  //On se tkaodje dole u build prosledjuej , pravi objekat nase klase AssetBloc sa nasim repositoryjem
+
+  //Uloga AssetBloc da cita podatke preko repositoryja
   late final AssetBloc bloc = AssetBloc(repository)..add(const LoadAssets());
+
+  //Ruter za rute za frontend
   late final router = GoRouter(
     initialLocation: widget.initialLocation,
     overridePlatformDefaultLocation: widget.initialLocation != null,
@@ -103,10 +118,7 @@ class _HedrionStudioState extends State<HedrionStudio> {
           flow: GenerationFlow.fromRoute(state.uri.queryParameters['flow']),
         ),
       ),
-      GoRoute(
-        path: '/draft',
-        builder: (context, state) => const CreateAssetScreen(),
-      ),
+      GoRoute(path: '/draft', redirect: (context, state) => '/workspace'),
       GoRoute(
         path: '/assets/:id',
         builder: (context, state) =>
@@ -146,13 +158,16 @@ class _HedrionStudioState extends State<HedrionStudio> {
     super.dispose();
   }
 
+  ///Ovo se zove posle init, pravimo ekran
   @override
   Widget build(BuildContext context) => StudioConnection(
-    client: widget.api,
-    offline: widget.offline,
-    onLogout: widget.onLogout,
+    client: widget.api, // veza ka apiu
+    offline:
+        widget.offline, // repozitorijum za rad i sinhrnizaciju kad ema mreze
+    onLogout:
+        widget.onLogout, //Funkcija koja se pozove kada korisnik izabere odjavu
     child: RepositoryProvider<AssetRepository>.value(
-      value: repository,
+      value: repository, // postavljamo repo sa nasi fejk asseti
       child: BlocProvider.value(
         value: bloc,
         child: MaterialApp.router(

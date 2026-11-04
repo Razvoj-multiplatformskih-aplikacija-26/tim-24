@@ -384,8 +384,6 @@ class StudioShell extends StatelessWidget {
                   repository.demonstrateTransferQuota();
                 case 'storage':
                   repository.demonstrateStorageQuota();
-                case 'draft':
-                  context.go('/draft');
               }
             } on DomainException catch (e) {
               ScaffoldMessenger.of(
@@ -394,10 +392,6 @@ class StudioShell extends StatelessWidget {
             }
           },
           itemBuilder: (_) => const [
-            PopupMenuItem(
-              value: 'draft',
-              child: Text('Detaljni privatni nacrt'),
-            ),
             PopupMenuItem(
               value: 'fail',
               child: Text('Izazovi grešku sledećeg zahteva'),

@@ -60,6 +60,7 @@ List<Asset> seedAssets({
 }
 
 List<GenerationAdmission> seedAdmissions(DateTime now, {int count = 18}) =>
+    //Pravimo 18 zahteva demo korisinka prvih 12 creator-a dugih 6 creator-b
     List.generate(
       count,
       (i) => GenerationAdmission(

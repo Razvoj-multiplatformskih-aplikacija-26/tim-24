@@ -4,7 +4,7 @@ Rok iz dostavljenog DOCX-a: kod u `main` do 4. novembra 2026. u 23:59:59. Odbran
 
 1. Iz svežeg klona pokrenuti `flutter pub get` u korenu. Pokrenuti mobilni klijent i backoffice bez API-ja/baze/ključeva; podrazumevan je KT1 režim.
 2. Pokazati najmanje deset zapisa i svih osam stanja. Izmeniti jedan klijent i pokazati da drugi ima nezavisne podatke.
-3. Otvoriti zaseban detalj i formu kreiranja. Naziv od dva znaka prikazuje srpsku domensku grešku. Kreirati validan nacrt i pokrenuti prelaz.
+3. Otvoriti detalj modela, pa iz biblioteke izabrati „Novi model“. U toku Text to 3D uneti prompt od dva znaka i kliknuti „Zatraži demo generisanje“ za prikaz greške. Uneti validan prompt, ponovo poslati zahtev i u detaljima proveriti da je model u redu čekanja.
 4. Pokazati loading, podatke, prazan rezultat pretrage, komandu za grešku sledećeg zahteva i „Pokušaj ponovo“. Pokazati potvrdu brisanja.
 5. Popuniti globalnu memorijsku kvotu i pokušati novu generaciju. Sačuvani nacrt ostaje nacrt; GPU red nije zamena za odbijanje upisa. Pokazati granične bajt-kvote kroz testove domena.
 6. U backoffice-u odobriti jednu i odbiti drugu prijavu sa razlogom. Pokazati isti tok na Windows-u i u pregledaču. Pokazati strelice, dve prečice, fokus i sužavanje bez gubitka izbora.

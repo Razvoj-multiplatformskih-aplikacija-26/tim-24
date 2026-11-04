@@ -89,10 +89,6 @@ class StudioWelcome extends StatelessWidget {
               icon: const Icon(Icons.image_outlined, size: 17),
               label: const Text('Text to Image'),
             ),
-            TextButton(
-              onPressed: () => context.go('/draft'),
-              child: const Text('Privatni nacrt ↗'),
-            ),
           ],
         ),
       ],

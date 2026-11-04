@@ -78,4 +78,46 @@ void main() {
     expect(find.text(pending.title), findsWidgets);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('rejection validates the reason and closes the dialog safely', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1400, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repository = MemoryModerationRepository(latency: Duration.zero);
+    final pending = (await repository.loadAssets()).firstWhere(
+      (a) => a.lifecycle == AssetLifecycle.pendingReview,
+    );
+    await tester.pumpWidget(HedrionBackoffice(repository: repository));
+    await tester.pumpAndSettle();
+
+    final reject = find.text('Odbij uz razlog');
+    await tester.ensureVisible(reject);
+    await tester.tap(reject);
+    await tester.pumpAndSettle();
+
+    final confirm = find.text('Odbij prijavu');
+    await tester.tap(confirm);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Unesite razlog odbijanja (najmanje 3 znaka).'),
+      findsOneWidget,
+    );
+
+    final reason = find.byType(TextFormField);
+    await tester.enterText(reason, '  asdasdasdas  ');
+    await tester.tap(confirm);
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Odbij javnu prijavu'), findsNothing);
+    final updated = (await repository.loadAssets()).firstWhere(
+      (a) => a.id == pending.id,
+    );
+    expect(updated.lifecycle, AssetLifecycle.rejected);
+    expect(updated.rejectionReason, 'asdasdasdas');
+    expect(find.text('Razlog: asdasdasdas'), findsOneWidget);
+  }, variant: const TargetPlatformVariant({TargetPlatform.windows}));
 }
