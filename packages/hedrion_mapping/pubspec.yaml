@@ -1,0 +1,11 @@
+name: hedrion_mapping
+description: Shared translation between Hedrion HTTP DTOs and its domain.
+publish_to: none
+resolution: workspace
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+dependencies:
+  domain: any
+  hedrion_contract: any
+dev_dependencies:
+  test: ^1.26.0

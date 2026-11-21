@@ -1,0 +1,15 @@
+name: platform_session
+description: Secure operating-system adapter for the shared session storage port.
+publish_to: none
+resolution: workspace
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_secure_storage: ^11.2.0
+  hedrion_api_client: any
+dev_dependencies:
+  domain: any
+  flutter_test:
+    sdk: flutter

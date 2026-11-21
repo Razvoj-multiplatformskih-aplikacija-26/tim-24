@@ -82,7 +82,7 @@ void main() {
         AssetLifecycle.pendingReview,
         stranger,
       ).error?.code,
-      ErrorCode.forbidden,
+      ErrorCode.notFound,
     );
     expect(
       validateTransition(
@@ -289,5 +289,126 @@ void main() {
     );
     first.clear();
     expect(second.length, 16);
+  });
+
+  test('rule errors retain limits and render changed server limits', () {
+    final rejected = validateTitle(
+      'a' * 41,
+      minLength: 5,
+      maxLength: 40,
+    ).error!;
+    expect(rejected.details, {
+      'minLength': 5,
+      'maxLength': 40,
+      'actualLength': 41,
+    });
+    // An already-built client uses received rule data, rather than its own
+    // default titleMaxLength, when the server changes the limit.
+    final received = DomainError(ErrorCode.invalidTitle, rejected.details);
+    expect(received.message, 'Naziv mora imati od 5 do 40 znakova.');
+    expect(received.message, rejected.message);
+    expect(
+      validateDraft(AssetDraft(title: 'ab')).error!.details,
+      validateTitle('ab').error!.details,
+    );
+    expect(
+      const DomainError(ErrorCode.invalidTitle, {
+        'minLength': 'bad',
+        'maxLength': -1,
+      }).message,
+      'Naziv mora imati od 3 do 60 znakova.',
+    );
+  });
+
+  test('quota error data describes usage and configurable limits', () {
+    final error = validateDailyGenerationQuota(
+      seedAdmissions(now, count: 2),
+      now,
+      limit: 2,
+    ).error!;
+    expect(error.details, {'limit': 2, 'current': 2, 'requested': 1});
+    expect(error.message, contains('2 zahteva'));
+    final bytes = validateTransferQuota(
+      transferredBytes: 5,
+      reservedBytes: 3,
+      requestedBytes: 4,
+      limit: 10,
+    ).error!;
+    expect(bytes.details, {
+      'limit': 10,
+      'used': 5,
+      'reserved': 3,
+      'requested': 4,
+    });
+    expect(bytes.message, contains('10 bajtova'));
+    expect(
+      validateDailyGenerationQuota([], now, limit: -1).error!.code,
+      ErrorCode.invalidInput,
+    );
+    expect(
+      const DomainError(ErrorCode.serverRuleRejected).message,
+      'Akcija trenutno nije dozvoljena. Osvežite podatke i pokušajte ponovo.',
+    );
+  });
+
+  test(
+    'shared permissions cover backoffice, moderation and private ownership',
+    () {
+      for (final role in UserRole.values) {
+        final actor = Actor(id: const UserId('other'), role: role);
+        final staff = role == UserRole.moderator || role == UserRole.admin;
+        expect(canAccessBackoffice(role), staff);
+        expect(canModerate(role), staff);
+        expect(validateBackofficeAccess(actor).isValid, staff);
+        expect(validateModerationAccess(actor).isValid, staff);
+        expect(canManageAsset(asset(AssetLifecycle.ready), actor), isFalse);
+        expect(
+          validateAssetOwnership(
+            asset(AssetLifecycle.ready),
+            actor,
+          ).error!.code,
+          ErrorCode.notFound,
+        );
+        expect(
+          validateTransition(
+            asset(AssetLifecycle.ready),
+            AssetLifecycle.pendingReview,
+            actor,
+          ).error!.code,
+          ErrorCode.notFound,
+        );
+      }
+      expect(
+        validateAssetOwnership(asset(AssetLifecycle.ready), owner).isValid,
+        isTrue,
+      );
+      expect(
+        validateBackofficeAccess(owner).error!.code,
+        ErrorCode.backofficeRoleRequired,
+      );
+    },
+  );
+
+  test('publication and rejection constraints produce shared error data', () {
+    final rights = validatePublicationLicense(
+      AssetLicense.ccBy,
+      allowDownload: true,
+      confirmRights: false,
+    ).error!;
+    expect(rights.code, ErrorCode.invalidInput);
+    expect(rights.message, 'Potvrdite prava na ulaznu sliku i model.');
+    expect((rights.details as Map)['rule'], 'publicationLicense');
+    final reason = validateTransition(
+      asset(AssetLifecycle.pendingReview),
+      AssetLifecycle.rejected,
+      moderator,
+      reason: 'x' * 1001,
+    ).error!;
+    expect(reason.code, ErrorCode.rejectionReasonRequired);
+    expect(reason.details, {
+      'minLength': 3,
+      'maxLength': 1000,
+      'actualLength': 1001,
+    });
   });
 }

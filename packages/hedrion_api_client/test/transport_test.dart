@@ -162,7 +162,7 @@ void main() {
   test(
     'file authorization refresh is bounded and quota failure never retries',
     () async {
-      var downloads = 0, refreshes = 0;
+      var downloads = 0, refreshes = 0, expirations = 0;
       final api =
           HedrionApiClient(
               'http://localhost:8080',
@@ -181,18 +181,24 @@ void main() {
             )
             ..token = 'stale'
             ..refreshToken = 'refresh';
+      api.onSessionExpired = () async {
+        expirations++;
+      };
       await expectLater(
         api.fileBytes('/api/v1/files/model'),
         throwsA(
           isA<DomainException>().having(
             (e) => e.error.code,
-            'unauthenticated',
-            ErrorCode.unauthenticated,
+            'expired after the bounded refresh',
+            ErrorCode.sessionExpired,
           ),
         ),
       );
       expect(downloads, 2);
       expect(refreshes, 1);
+      expect(expirations, 1);
+      expect(api.token, isNull);
+      expect(api.refreshToken, isNull);
       api.close();
       var attempts = 0;
       final quota = HedrionApiClient(

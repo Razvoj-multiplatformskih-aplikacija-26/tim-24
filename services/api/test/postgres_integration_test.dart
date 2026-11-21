@@ -1,10 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:domain/domain.dart' as domain;
 import 'package:hedrion_api/hedrion_api.dart';
 import 'package:image/image.dart' as image;
 import 'package:postgres/postgres.dart';
-import 'package:shelf/shelf.dart';
+import 'package:relic/relic.dart' as relic;
 import 'package:test/test.dart';
 import 'security_test.dart' show makeGlb;
 
@@ -189,7 +190,7 @@ void main() {
       final creatorToken = await sessionFor(a),
           moderatorToken = await sessionFor(moderator);
       Future<Json> get(String path, String token) async {
-        final response = await api.handler(Request(
+        final response = await api.handler(makeRequest(
             'GET', Uri.parse('http://localhost$path'),
             headers: {'authorization': 'Bearer $token'}));
         expect(response.statusCode, 200);
@@ -222,7 +223,7 @@ void main() {
       expect(stats['reviewedToday'], 1);
       expect(stats['approvalRate'], 1.0);
       expect(stats['activeJobs'], 0);
-      final denied = await api.handler(Request(
+      final denied = await api.handler(makeRequest(
           'GET',
           Uri.parse(
               'http://localhost/api/v1/moderation/submissions/submission-100'),
@@ -280,7 +281,7 @@ void main() {
         yield Uint8List(1000);
       }
 
-      final result = await api.handler(Request('PUT',
+      final result = await api.handler(makeRequest('PUT',
           Uri.parse('http://localhost/api/v1/assets/${asset['id']}/source'),
           headers: {
             'authorization': 'Bearer $token',
@@ -468,6 +469,150 @@ void main() {
               'count']),
           2);
     });
+    test('Modal rejects invalid model options without spending daily admission',
+        () async {
+      final real = HedrionService(db, objects.path,
+          clock: () => current,
+          generationProvider: 'modal',
+          enabledGenerationModels: ['trellis2']);
+      final asset = await draft(a);
+      for (final options in [
+        {'modelProvider': 'spar3d'},
+        {'seed': -1},
+        {'seed': '42'},
+        {'sourcePrompt': List.filled(2001, 'x').join()},
+      ]) {
+        await expectLater(
+            real.generate(
+                a,
+                asset['id'] as String,
+                {
+                  'baseRevision': 1,
+                  'inputType': 'text_to_3d',
+                  'sourcePrompt': 'A clockwork owl',
+                  ...options,
+                },
+                'invalid-${options.keys.first}-${options.values.first.toString().length}'),
+            throwsA(isA<ApiFailure>()));
+      }
+      expect(await service.jobs(a, asset['id'] as String), isEmpty);
+      final usage =
+          await db.transaction((tx) => tx.query('SELECT * FROM daily_usage'));
+      expect(usage, isEmpty);
+      expect((await service.getAsset(a, asset['id'] as String))['lifecycle'],
+          'draft');
+    });
+    test(
+        'Modal text result persists selected model, seed and generated reference atomically',
+        () async {
+      final real = HedrionService(db, objects.path,
+          clock: () => current, generationProvider: 'modal');
+      final asset = await draft(a);
+      final command = <String, dynamic>{
+        'baseRevision': 1,
+        'inputType': 'text_to_3d',
+        'sourcePrompt': 'A clockwork owl',
+        'modelProvider': 'trellis2',
+        'seed': 123
+      };
+      final accepted = await real.generate(
+          a, asset['id'] as String, command, 'modal-reference-test');
+      final jobId = (accepted['job'] as Json)['id'] as String;
+      expect((accepted['job'] as Json)['modelProvider'], 'trellis2');
+      expect((accepted['job'] as Json)['seed'], 123);
+      expect(
+          await real.generate(
+              a, asset['id'] as String, command, 'modal-reference-test'),
+          accepted);
+      await scheduler.claim();
+      // Legacy jobs may have only provider, without modelProvider. That still
+      // binds completion to the selected model and must reject fake output.
+      await db.transaction((tx) => tx.query(
+          "UPDATE generation_jobs SET data=data-'modelProvider' WHERE id=@id",
+          {'id': jobId}));
+      final png = image.encodePng(image.Image(width: 4, height: 4));
+      final result = <String, dynamic>{
+        'jobId': jobId,
+        'provider': 'trellis2',
+        'modelBase64': base64Encode(makeGlb()),
+        'previewBase64': base64Encode(png),
+        'referenceImageBase64': base64Encode(png),
+        'metadata': {'referenceImageProvider': 'qwen_image_21_turbo'},
+        'metrics': {'inference_ms': 456},
+        'referenceImageMetrics': {'inference_ms': 123}
+      };
+      await expectLater(
+          scheduler.complete(jobId, {...result, 'provider': 'fake'}),
+          throwsA(isA<ApiFailure>()
+              .having((e) => e.code, 'code', 'invalidWorkerOutput')));
+      expect(
+          await db.transaction((tx) => tx.query('SELECT id FROM stored_files')),
+          isEmpty);
+      await scheduler.complete(jobId, result);
+      final completed = await service.getAsset(a, asset['id'] as String);
+      expect(completed['lifecycle'], 'ready');
+      final history = await service.job(a, jobId);
+      final referenceId = history['sourceImageFileId'] as String;
+      final file = await service.fileInfo(a, referenceId);
+      expect(file['kind'], 'source');
+      await expectLater(
+          service.fileInfo(b, referenceId), throwsA(isA<ApiFailure>()));
+      expect(history['seed'], 123);
+      expect(history['sourceImageFileId'], referenceId);
+      expect(history['referenceImageMetrics'], {'inference_ms': 123});
+      final usage =
+          await db.transaction((tx) => tx.one('SELECT * FROM daily_usage'));
+      expect(usage!['accepted_generations'], 1);
+    });
+    test(
+        'HTTP retry preserves failed Modal model and seed instead of the default',
+        () async {
+      final real = HedrionService(db, objects.path,
+          clock: () => current, generationProvider: 'modal');
+      final realApi = HttpApi(real, scheduler,
+          workerSecret: 'test-worker-secret-at-least-32-characters');
+      final token = await sessionFor(a);
+      for (final model in ['hunyuan3d_21', 'trellis2']) {
+        final asset = await draft(a);
+        final original = await real.generate(
+            a,
+            asset['id'] as String,
+            {
+              'baseRevision': 1,
+              'inputType': 'text_to_3d',
+              'sourcePrompt': 'A clockwork owl',
+              'modelProvider': model,
+              'seed': 98765,
+            },
+            'original-$model');
+        final originalId = (original['job'] as Json)['id'] as String;
+        await scheduler.claim();
+        await scheduler.markFailed(originalId, 'workerFailed');
+        final failedAsset = await service.getAsset(a, asset['id'] as String);
+        final response = await realApi.handler(makeRequest('POST',
+            Uri.parse('http://localhost/api/v1/generations/$originalId/retry'),
+            headers: {
+              'authorization': 'Bearer $token',
+              'content-type': 'application/json',
+              'idempotency-key': 'retry-$model'
+            },
+            body: jsonEncode({
+              'baseRevision': failedAsset['revision'],
+              // Retry follows the original job, even if a caller submits a different model.
+              'modelProvider': 'spar3d', 'seed': 0
+            })));
+        expect(response.statusCode, 202);
+        final result = jsonDecode(await response.readAsString()) as Json;
+        final retried = result['job'] as Json;
+        expect(retried['id'], isNot(originalId));
+        expect(retried['modelProvider'], model);
+        expect(retried['provider'], model);
+        expect(retried['seed'], 98765);
+        expect(retried['sourcePrompt'], 'A clockwork owl');
+        await scheduler.claim();
+        await scheduler.markFailed(retried['id'] as String, 'workerFailed');
+      }
+    });
     test('malformed worker output fails before a ready result is visible',
         () async {
       final generated =
@@ -489,24 +634,25 @@ void main() {
     test('HTTP auth, approved CORS and callback signature protection',
         () async {
       expect(
-          (await api.handler(
-                  Request('GET', Uri.parse('http://localhost/api/v1/assets'))))
+          (await api.handler(makeRequest(
+                  'GET', Uri.parse('http://localhost/api/v1/assets'))))
               .statusCode,
           401);
       expect(
-          (await api.handler(Request(
+          (await api.handler(makeRequest(
                   'GET', Uri.parse('http://localhost/health'),
                   headers: {'origin': 'https://untrusted.example'})))
               .statusCode,
           403);
       expect(
-          (await api.handler(Request(
+          (await api.handler(makeRequest(
                   'OPTIONS', Uri.parse('http://localhost/api/v1/assets'),
                   headers: {'origin': 'https://studio.example.test'})))
-              .headers['access-control-allow-origin'],
+              .headers['access-control-allow-origin']
+              ?.single,
           'https://studio.example.test');
       expect(
-          (await api.handler(Request(
+          (await api.handler(makeRequest(
                   'POST',
                   Uri.parse(
                       'http://localhost/internal/v1/generations/fake/callback'),
@@ -519,7 +665,7 @@ void main() {
       final asset = await draft(a),
           token = await sessionFor(a),
           png = image.encodePng(image.Image(width: 2, height: 2));
-      final uploaded = await api.handler(Request('PUT',
+      final uploaded = await api.handler(makeRequest('PUT',
           Uri.parse('http://localhost/api/v1/assets/${asset['id']}/source'),
           headers: {
             'authorization': 'Bearer $token',
@@ -530,11 +676,12 @@ void main() {
       expect(uploaded.statusCode, 201);
       final body = jsonMap(jsonDecode(await uploaded.readAsString())),
           file = body['file'] as Json;
-      final download = await api.handler(Request(
+      final download = await api.handler(makeRequest(
           'GET', Uri.parse('http://localhost/api/v1/files/${file['id']}'),
           headers: {'authorization': 'Bearer $token', 'range': 'bytes=2-5'}));
       expect(download.statusCode, 206);
-      expect(download.headers['content-range'], 'bytes 2-5/${png.length}');
+      expect(
+          download.headers['content-range']?.single, 'bytes 2-5/${png.length}');
       final bytes = await download.read().expand((v) => v).toList();
       expect(bytes, png.sublist(2, 6));
       final usage =
@@ -545,7 +692,7 @@ void main() {
     test('partial upload preserves received-byte charge and releases remainder',
         () async {
       final asset = await draft(a), token = await sessionFor(a);
-      final uploaded = await api.handler(Request('PUT',
+      final uploaded = await api.handler(makeRequest('PUT',
           Uri.parse('http://localhost/api/v1/assets/${asset['id']}/source'),
           headers: {
             'authorization': 'Bearer $token',
@@ -594,7 +741,7 @@ void main() {
         'x-hedrion-signature':
             workerSignature(secret, timestamp, nonce, payload)
       };
-      final first = await api.handler(Request('POST',
+      final first = await api.handler(makeRequest('POST',
           Uri.parse('http://localhost/internal/v1/generations/$job/callback'),
           headers: headers, body: payload));
       expect(first.statusCode, 200);
@@ -603,7 +750,7 @@ void main() {
       expect(asset['lifecycle'], 'ready');
       expect(asset['outputFileId'], isNotNull);
       expect(await service.job(a, job), containsPair('status', 'succeeded'));
-      final replay = await api.handler(Request('POST',
+      final replay = await api.handler(makeRequest('POST',
           Uri.parse('http://localhost/internal/v1/generations/$job/callback'),
           headers: headers, body: payload));
       expect(replay.statusCode, 409);
@@ -623,7 +770,7 @@ void main() {
       final submission = submitted['submission'] as Json;
       await service.moderate(moderator, submission['id'] as String, true,
           {'baseRevision': 1}, 'public-transfer-approve');
-      final download = await api.handler(Request(
+      final download = await api.handler(makeRequest(
           'GET',
           Uri.parse(
               'http://localhost/api/v1/public/assets/${submission['slug']}/files/model')));
@@ -637,7 +784,7 @@ void main() {
       await db.transaction((tx) async {
         await tx.query('UPDATE daily_usage SET transferred_bytes=1000000000');
       });
-      final exhausted = await api.handler(Request(
+      final exhausted = await api.handler(makeRequest(
           'GET',
           Uri.parse(
               'http://localhost/api/v1/public/assets/${submission['slug']}/files/model')));
@@ -647,41 +794,42 @@ void main() {
         'browser refresh uses HttpOnly strict cookies, rotates, and rejects missing origin',
         () async {
       const origin = 'https://studio.example.test';
-      final registered = await api.handler(
-          Request('POST', Uri.parse('http://localhost/api/v1/auth/register'),
-              headers: {'origin': origin, 'content-type': 'application/json'},
-              body: jsonEncode({
-                'email': 'browser@example.test',
-                'displayName': 'Browser kreator',
-                'password': 'a-long-browser-password',
-                'browserSession': true,
-                'role': 'moderator'
-              })));
+      final registered = await api.handler(makeRequest(
+          'POST', Uri.parse('http://localhost/api/v1/auth/register'),
+          headers: {'origin': origin, 'content-type': 'application/json'},
+          body: jsonEncode({
+            'email': 'browser@example.test',
+            'displayName': 'Browser kreator',
+            'password': 'a-long-browser-password',
+            'browserSession': true,
+            'role': 'moderator'
+          })));
       expect(registered.statusCode, 201);
-      expect(registered.headers['access-control-allow-credentials'], 'true');
+      expect(registered.headers['access-control-allow-credentials']?.single,
+          'true');
       final session = jsonMap(jsonDecode(await registered.readAsString()));
       expect(session.containsKey('refreshToken'), isFalse);
       expect((session['user'] as Json)['role'], 'creator');
-      final cookie = registered.headers['set-cookie']!;
+      final cookie = registered.headers['set-cookie']!.single;
       expect(cookie, contains('HttpOnly'));
       expect(cookie, contains('SameSite=Strict'));
       expect(cookie, contains('Path=/api/v1/auth'));
       expect(cookie, contains('Secure'));
-      final missingOrigin = await api.handler(Request(
+      final missingOrigin = await api.handler(makeRequest(
           'POST', Uri.parse('http://localhost/api/v1/auth/refresh'),
           headers: {'cookie': cookie.split(';').first},
           body: '{"browserSession":true}'));
       expect(missingOrigin.statusCode, 403);
-      final refreshed = await api.handler(Request(
+      final refreshed = await api.handler(makeRequest(
           'POST', Uri.parse('http://localhost/api/v1/auth/refresh'),
           headers: {'origin': origin, 'cookie': cookie.split(';').first},
           body: '{"browserSession":true}'));
       expect(refreshed.statusCode, 200);
-      expect(refreshed.headers['set-cookie'], isNot(cookie));
+      expect(refreshed.headers['set-cookie']?.single, isNot(cookie));
       final rotated = jsonMap(jsonDecode(await refreshed.readAsString()));
       expect(rotated.containsKey('refreshToken'), isFalse);
       expect(
-          (await api.handler(Request(
+          (await api.handler(makeRequest(
                   'POST', Uri.parse('http://localhost/api/v1/auth/refresh'),
                   headers: {
                     'origin': origin,
@@ -690,13 +838,108 @@ void main() {
                   body: '{"browserSession":true}')))
               .statusCode,
           401);
-      final loggedOut = await api.handler(Request(
+      final loggedOut = await api.handler(makeRequest(
           'POST', Uri.parse('http://localhost/api/v1/auth/logout'), headers: {
         'origin': origin,
         'authorization': 'Bearer ${rotated['token']}'
       }));
       expect(loggedOut.statusCode, 200);
-      expect(loggedOut.headers['set-cookie'], contains('Max-Age=0'));
+      expect(loggedOut.headers['set-cookie']?.single, contains('Max-Age=0'));
+    });
+    test(
+        'expired access logout revokes scoped refresh cookie and cannot restore',
+        () async {
+      const origin = 'https://studio.example.test';
+      final shortService = HedrionService(db, objects.path,
+          clock: () => current,
+          sessionAccessTtl: const Duration(seconds: 2),
+          sessionRefreshTtl: const Duration(seconds: 10));
+      final shortApi = HttpApi(shortService, scheduler,
+          origins: [origin],
+          secureCookies: false,
+          workerSecret: 'test-worker-secret-at-least-32-characters');
+      final registered = await shortApi.handler(makeRequest(
+          'POST', Uri.parse('http://localhost/api/v1/auth/register'),
+          headers: {'origin': origin},
+          body: jsonEncode({
+            'email': 'short@example.test',
+            'password': 'SafePassword123!',
+            'displayName': 'Kratka sesija',
+            'browserSession': true
+          })));
+      expect(registered.statusCode, 201);
+      final session = jsonMap(jsonDecode(await registered.readAsString()));
+      final cookie = registered.headers['set-cookie']!.single;
+      expect(cookie, contains('Max-Age=10'));
+      current = current.add(const Duration(seconds: 3));
+      final denied = await shortApi.handler(makeRequest(
+          'GET', Uri.parse('http://localhost/api/v1/me'),
+          headers: {'authorization': "Bearer ${session['token']}"}));
+      expect(denied.statusCode, 401);
+      final logout = await shortApi.handler(
+          makeRequest('POST', Uri.parse('http://localhost/api/v1/auth/logout'),
+              headers: {
+                'origin': origin,
+                'cookie': cookie.split(';').first,
+                'authorization': "Bearer ${session['token']}"
+              },
+              body: '{"browserSession":true}'));
+      expect(logout.statusCode, 200);
+      expect(logout.headers['set-cookie']!.single,
+          allOf(startsWith('hedrion_refresh_studio='), contains('Max-Age=0')));
+      final restored = await shortApi.handler(makeRequest(
+          'POST', Uri.parse('http://localhost/api/v1/auth/refresh'),
+          headers: {'origin': origin, 'cookie': cookie.split(';').first},
+          body: '{"browserSession":true}'));
+      expect(restored.statusCode, 401);
+      final missing = await shortApi.handler(makeRequest(
+          'POST', Uri.parse('http://localhost/api/v1/auth/refresh'),
+          headers: {'origin': origin}, body: '{"browserSession":true}'));
+      expect(jsonMap(jsonDecode(await missing.readAsString()))['code'],
+          'unauthenticated');
+    });
+    test('refresh cookie keeps the absolute session deadline after rotation',
+        () async {
+      const origin = 'https://studio.example.test';
+      final shortService = HedrionService(db, objects.path,
+          clock: () => current,
+          sessionAccessTtl: const Duration(seconds: 2),
+          sessionRefreshTtl: const Duration(seconds: 5));
+      final shortApi = HttpApi(shortService, scheduler,
+          origins: [origin],
+          secureCookies: false,
+          workerSecret: 'test-worker-secret-at-least-32-characters');
+      final registered = await shortApi.handler(makeRequest(
+          'POST', Uri.parse('http://localhost/api/v1/auth/register'),
+          headers: {'origin': origin},
+          body: jsonEncode({
+            'email': 'absolute@example.test',
+            'password': 'SafePassword123!',
+            'displayName': 'Apsolutna sesija',
+            'browserSession': true
+          })));
+      expect(registered.statusCode, 201);
+      final cookie = registered.headers['set-cookie']!.single;
+      expect(cookie, contains('Max-Age=5'));
+      final session = jsonMap(jsonDecode(await registered.readAsString()));
+      current = current.add(const Duration(seconds: 4));
+      final rotated = await shortApi.handler(makeRequest(
+          'POST', Uri.parse('http://localhost/api/v1/auth/refresh'),
+          headers: {'origin': origin, 'cookie': cookie.split(';').first},
+          body: '{"browserSession":true}'));
+      expect(rotated.statusCode, 200);
+      final rotatedCookie = rotated.headers['set-cookie']!.single;
+      expect(rotatedCookie, contains('Max-Age=1'));
+      final rotatedSession = jsonMap(jsonDecode(await rotated.readAsString()));
+      expect(rotatedSession['refreshExpiresAt'], session['refreshExpiresAt']);
+      current = current.add(const Duration(seconds: 2));
+      final expired = await shortApi.handler(makeRequest(
+          'POST', Uri.parse('http://localhost/api/v1/auth/refresh'),
+          headers: {'origin': origin, 'cookie': rotatedCookie.split(';').first},
+          body: '{"browserSession":true}'));
+      expect(expired.statusCode, 401);
+      expect(jsonMap(jsonDecode(await expired.readAsString()))['code'],
+          'invalidRefresh');
     });
     test(
         'delete commits tombstone before file cleanup and resumes after a partial failure',
@@ -739,7 +982,7 @@ void main() {
         'mismatched HTTP upload length is rejected before reserving or reading',
         () async {
       final asset = await draft(a), token = await sessionFor(a);
-      final uploaded = await api.handler(Request('PUT',
+      final uploaded = await api.handler(makeRequest('PUT',
           Uri.parse('http://localhost/api/v1/assets/${asset['id']}/source'),
           headers: {
             'authorization': 'Bearer $token',
@@ -764,7 +1007,7 @@ void main() {
         yield png.sublist(split);
       }
 
-      final uploaded = await api.handler(Request('PUT',
+      final uploaded = await api.handler(makeRequest('PUT',
           Uri.parse('http://localhost/api/v1/assets/${asset['id']}/source'),
           headers: {
             'authorization': 'Bearer $token',
@@ -802,8 +1045,8 @@ void main() {
       await expectLater(service.jobs(b, asset['id'] as String),
           throwsA(isA<ApiFailure>().having((e) => e.status, 'status', 404)));
       expect(
-          (await api.handler(
-                  Request('GET', Uri.parse('http://localhost/unknown-route'))))
+          (await api.handler(makeRequest(
+                  'GET', Uri.parse('http://localhost/unknown-route'))))
               .statusCode,
           404);
     });
@@ -815,35 +1058,35 @@ void main() {
       const origin = 'https://studio.example.test';
       const cookies =
           'hedrion_refresh_studio=refresh-a; hedrion_refresh_backoffice=refresh-moderator';
-      final studio = await api.handler(Request(
+      final studio = await api.handler(makeRequest(
           'POST', Uri.parse('http://localhost/api/v1/auth/refresh'),
           headers: {'origin': origin, 'cookie': cookies},
           body: '{"browserSession":true,"browserSessionScope":"studio"}'));
       expect(studio.statusCode, 200);
-      expect(
-          studio.headers['set-cookie'], startsWith('hedrion_refresh_studio='));
+      expect(studio.headers['set-cookie']?.single,
+          startsWith('hedrion_refresh_studio='));
       final studioSession = jsonMap(jsonDecode(await studio.readAsString()));
       expect((studioSession['user'] as Json)['id'], 'a');
-      final logout = await api.handler(Request(
+      final logout = await api.handler(makeRequest(
           'POST', Uri.parse('http://localhost/api/v1/auth/logout'),
           headers: {
             'origin': origin,
             'authorization': 'Bearer ${studioSession['token']}'
           },
           body: '{"browserSession":true,"browserSessionScope":"studio"}'));
-      expect(
-          logout.headers['set-cookie'], startsWith('hedrion_refresh_studio='));
-      final office = await api.handler(Request(
+      expect(logout.headers['set-cookie']?.single,
+          startsWith('hedrion_refresh_studio='));
+      final office = await api.handler(makeRequest(
           'POST', Uri.parse('http://localhost/api/v1/auth/refresh'),
           headers: {'origin': origin, 'cookie': cookies},
           body: '{"browserSession":true,"browserSessionScope":"backoffice"}'));
       expect(office.statusCode, 200);
-      expect(office.headers['set-cookie'],
+      expect(office.headers['set-cookie']?.single,
           startsWith('hedrion_refresh_backoffice='));
       final officeSession = jsonMap(jsonDecode(await office.readAsString()));
       expect((officeSession['user'] as Json)['role'], 'moderator');
       expect(
-          (await api.handler(Request(
+          (await api.handler(makeRequest(
                   'POST', Uri.parse('http://localhost/api/v1/auth/refresh'),
                   headers: {'origin': origin, 'cookie': cookies},
                   body:
@@ -979,9 +1222,166 @@ void main() {
                   'accepted_generations']),
           1);
     });
+    test('raw HTTP uses shared validation codes and complete rule data',
+        () async {
+      final token = await sessionFor(a);
+      Future<({int status, Json data})> post(
+          String path, Json input, String key) async {
+        final result = await api
+            .handler(makeRequest('POST', Uri.parse('http://localhost$path'),
+                headers: {
+                  'authorization': 'Bearer $token',
+                  'content-type': 'application/json',
+                  'idempotency-key': key
+                },
+                body: jsonEncode(input)));
+        return (
+          status: result.statusCode,
+          data: jsonMap(jsonDecode(await result.readAsString()))
+        );
+      }
+
+      final title =
+          await post('/api/v1/assets', {'title': 'ab'}, 'bad-title-request');
+      final localTitle = domain.validateTitle('ab').error!;
+      expect(title.status, 422);
+      expect(title.data['code'], localTitle.code.name);
+      expect(title.data['details'], localTitle.details);
+      expect(await service.listAssets(a), isEmpty);
+
+      final asset = await ready(a);
+      for (final options in [
+        {'license': 'ccBy', 'confirmRights': false, 'allowDownload': true},
+        {
+          'license': 'allRightsReserved',
+          'confirmRights': true,
+          'allowDownload': true
+        },
+      ]) {
+        final rejected = await post(
+            '/api/v1/assets/${asset['id']}/submissions',
+            {'baseRevision': asset['revision'], ...options},
+            'invalid-license-${options['license']}');
+        final local = domain
+            .validatePublicationLicense(
+                domain.AssetLicense.values.byName(options['license'] as String),
+                allowDownload: options['allowDownload'] as bool,
+                confirmRights: options['confirmRights'] as bool)
+            .error!;
+        expect(rejected.status, 422);
+        expect(rejected.data['code'], local.code.name);
+        expect(rejected.data['details'], local.details);
+        expect((await service.getAsset(a, asset['id'] as String))['lifecycle'],
+            'ready');
+      }
+      expect(
+          await db.transaction((tx) async => (await tx.one(
+                  'SELECT count(*) AS count FROM publication_submissions'))![
+              'count']),
+          0);
+
+      await admissions(20);
+      final queuedDraft = await draft(a);
+      final quota = await post(
+          '/api/v1/assets/${queuedDraft['id']}/generations',
+          {
+            'baseRevision': queuedDraft['revision'],
+            'inputType': 'text_to_3d',
+            'sourcePrompt': 'Kameni stub',
+          },
+          'full-quota-draft-request');
+      expect(quota.status, 429);
+      expect(quota.data['code'],
+          domain.ErrorCode.dailyGenerationQuotaExceeded.name);
+      expect(
+          quota.data['details'], {'limit': 20, 'current': 20, 'requested': 1});
+    });
+
+    test('raw HTTP denies creator decisions and foreign modifying requests',
+        () async {
+      final asset = await ready(a);
+      final submitted = await service.submit(
+          a,
+          asset['id'] as String,
+          {
+            'baseRevision': asset['revision'],
+            'license': 'ccBy',
+            'confirmRights': true,
+            'allowDownload': false,
+          },
+          'permission-fixture-submit');
+      final submission = submitted['submission'] as Json;
+      final token = await sessionFor(b);
+      Future<({int status, Json data})> command(
+          String method, String path, Json input, String key) async {
+        final result = await api
+            .handler(makeRequest(method, Uri.parse('http://localhost$path'),
+                headers: {
+                  'authorization': 'Bearer $token',
+                  'content-type': 'application/json',
+                  'idempotency-key': key
+                },
+                body: jsonEncode(input)));
+        return (
+          status: result.statusCode,
+          data: jsonMap(jsonDecode(await result.readAsString()))
+        );
+      }
+
+      final permission = domain.validateModerationAccess(b.actor).error!;
+      for (final decision in ['approve', 'reject']) {
+        final rejected = await command(
+            'POST',
+            '/api/v1/moderation/submissions/${submission['id']}/$decision',
+            {'baseRevision': 1, 'reason': 'Zahtev van aplikacije'},
+            'creator-$decision-request');
+        expect(rejected.status, 403);
+        expect(rejected.data['code'], permission.code.name);
+        expect(rejected.data['details'], permission.details);
+      }
+      for (final method in ['PATCH', 'DELETE']) {
+        final rejected = await command(
+            method,
+            '/api/v1/assets/${asset['id']}',
+            {'baseRevision': 2, 'title': 'Tudja izmena'},
+            'foreign-$method-request');
+        expect(rejected.status, 404);
+        expect(rejected.data['code'], domain.ErrorCode.notFound.name);
+      }
+      final retained = await service.getAsset(a, asset['id'] as String);
+      expect(retained['title'], asset['title']);
+      expect(retained['lifecycle'], 'pendingReview');
+      expect(
+          (await service.moderationSubmission(
+              moderator, submission['id'] as String))['status'],
+          'pending_review');
+    });
   },
       skip: url == null
           ? 'Set TEST_DATABASE_URL to run isolated-schema real PostgreSQL integration tests.'
           : false,
       timeout: const Timeout(Duration(minutes: 2)));
+}
+
+// Build native Relic requests without a socket for deterministic quota/stream tests.
+relic.Request makeRequest(String method, Uri url,
+    {Map<String, String> headers = const {}, Object? body}) {
+  final relic.Body requestBody;
+  if (body == null) {
+    requestBody = relic.Body.empty();
+  } else if (body is String) {
+    requestBody = relic.Body.fromString(body, mimeType: relic.MimeType.json);
+  } else if (body is List<int>) {
+    requestBody = relic.Body.fromData(Uint8List.fromList(body));
+  } else if (body is Stream<List<int>>) {
+    requestBody = relic.Body.fromDataStream(body.map(Uint8List.fromList),
+        contentLength: int.tryParse(headers['content-length'] ?? ''));
+  } else {
+    throw ArgumentError('Unsupported request body');
+  }
+  return relic.RequestInternal.create(relic.Method.parse(method), url, Object(),
+      headers: relic.Headers.fromMap({
+        for (final e in headers.entries) e.key: [e.value]
+      }),
+      body: requestBody);
 }

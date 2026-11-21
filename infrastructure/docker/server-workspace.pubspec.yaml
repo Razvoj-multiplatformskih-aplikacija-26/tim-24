@@ -1,0 +1,10 @@
+name: hedrion_container_workspace
+publish_to: none
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+workspace:
+  - packages/domain
+  - packages/hedrion_contract
+  - packages/hedrion_mapping
+  - services/api
+  - apps/server

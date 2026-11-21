@@ -6,8 +6,9 @@ environment:
   sdk: '>=3.6.0 <4.0.0'
 dependencies:
   domain: any
-  shelf: ^1.4.2
-  shelf_router: ^1.1.4
+  hedrion_contract: any
+  hedrion_mapping: any
+  relic: 1.2.0
   postgres: ^3.5.9
   crypto: ^3.0.6
   cryptography: ^2.7.0

@@ -1,8 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:domain/domain.dart';
+import 'package:hedrion_contract/hedrion_contract.dart';
+import 'package:hedrion_mapping/hedrion_mapping.dart';
 import 'package:http/http.dart' as http;
 import 'transport.dart' if (dart.library.js_interop) 'transport_web.dart';
+import 'session.dart';
 
 final class HedrionApiClient {
   HedrionApiClient(
@@ -10,22 +14,120 @@ final class HedrionApiClient {
     http.Client? client,
     bool? browserSession,
     this.browserScope = 'studio',
+    this.sessionStorage,
+    DateTime Function()? clock,
   }) : baseUrl = baseUrl.replaceAll(RegExp(r'/+$'), ''),
        _client = client ?? createTransport(),
-       useCookieRefresh = browserSession ?? browserTransport;
+       useCookieRefresh = browserSession ?? browserTransport,
+       clock = clock ?? DateTime.now;
   final String baseUrl;
   final http.Client _client;
   final bool useCookieRefresh;
   final String browserScope;
+  final SessionStorage? sessionStorage;
+  final DateTime Function() clock;
   String? token;
   String? refreshToken;
   Map<String, dynamic>? user;
+  DateTime? expiresAt, refreshExpiresAt;
+  Timer? _expirationTimer;
+  bool _expirationNotified = false;
   Future<void> Function()? onSessionChanged;
+  Future<void> Function()? onSessionExpired;
   Future<void>? _refreshing;
   bool get _canRefresh => refreshToken != null || useCookieRefresh;
-  Future<void> _renewSession() => _refreshing ??= refresh().whenComplete(() {
-    _refreshing = null;
-  });
+  Future<void> _renewSession() => _refreshing ??= (() async {
+    try {
+      await refresh();
+    } on DomainException catch (e) {
+      if (e.error.code == ErrorCode.unauthenticated ||
+          e.error.code == ErrorCode.sessionExpired) {
+        await _clearSession(expired: true);
+        throw const DomainException(DomainError(ErrorCode.sessionExpired));
+      }
+      rethrow;
+    }
+  })().whenComplete(() => _refreshing = null);
+
+  Future<void> _clearSession({bool expired = false}) async {
+    if (expired && _expirationNotified) return;
+    if (expired) _expirationNotified = true;
+    _expirationTimer?.cancel();
+    token = null;
+    refreshToken = null;
+    user = null;
+    expiresAt = null;
+    refreshExpiresAt = null;
+    try {
+      if (!useCookieRefresh) await sessionStorage?.clear();
+    } finally {
+      await onSessionChanged?.call();
+      if (expired) await onSessionExpired?.call();
+    }
+  }
+
+  void _scheduleExpiration() {
+    _expirationTimer?.cancel();
+    final deadline = refreshExpiresAt;
+    if (deadline == null) return;
+    final remaining = deadline.difference(clock().toUtc());
+    // Chunk long waits to remain within browser timer limits. The deadline
+    // always comes from the server, including after credential rotation.
+    final wait = remaining > const Duration(days: 1)
+        ? const Duration(days: 1)
+        : remaining;
+    _expirationTimer = Timer(wait.isNegative ? Duration.zero : wait, () {
+      if (clock().toUtc().isBefore(deadline)) {
+        _scheduleExpiration();
+      } else {
+        unawaited(_clearSession(expired: true).catchError((Object _) {}));
+      }
+    });
+  }
+
+  /// Restore credentials through the secure-storage port or a scoped HttpOnly
+  /// browser cookie. Cached native identity also permits the offline workspace.
+  Future<bool> restoreSession() async {
+    if (!useCookieRefresh) {
+      final saved = await sessionStorage?.read();
+      if (saved == null) return false;
+      token = saved.token;
+      refreshToken = saved.refreshToken;
+      user = Map<String, dynamic>.from(saved.user);
+      expiresAt = saved.expiresAt;
+      refreshExpiresAt = saved.refreshExpiresAt;
+      if (refreshExpiresAt != null &&
+          !clock().toUtc().isBefore(refreshExpiresAt!)) {
+        await _clearSession(expired: true);
+        throw const DomainException(DomainError(ErrorCode.sessionExpired));
+      }
+      _scheduleExpiration();
+    }
+    try {
+      if (useCookieRefresh) {
+        await refresh();
+      } else {
+        await me();
+      }
+      return true;
+    } on DomainException catch (e) {
+      if (_expirationNotified) {
+        throw const DomainException(DomainError(ErrorCode.sessionExpired));
+      }
+      if (!useCookieRefresh && e.error.code == ErrorCode.unavailable) {
+        return true;
+      }
+      if (e.error.code == ErrorCode.unauthenticated) {
+        await _clearSession();
+        return false;
+      }
+      if (e.error.code == ErrorCode.sessionExpired && user != null) {
+        await _clearSession(expired: true);
+      }
+      rethrow;
+    }
+  }
+
   Uri uri(String path) =>
       Uri.parse('$baseUrl${path.startsWith('/') ? path : '/$path'}');
 
@@ -65,6 +167,12 @@ final class HedrionApiClient {
         );
       }
       if (response.statusCode >= 400) {
+        if (response.statusCode == 401 &&
+            !path.startsWith('/api/v1/auth/') &&
+            token != null) {
+          await _clearSession(expired: true);
+          throw const DomainException(DomainError(ErrorCode.sessionExpired));
+        }
         throw DomainException(_error(response.statusCode, decoded));
       }
       return decoded;
@@ -79,12 +187,12 @@ final class HedrionApiClient {
     await request(
       'POST',
       '/api/v1/auth/login',
-      body: {
-        'email': email,
-        'password': password,
-        if (useCookieRefresh) 'browserSession': true,
-        if (useCookieRefresh) 'browserSessionScope': browserScope,
-      },
+      body: LoginRequestDto(
+        email: email,
+        password: password,
+        browserSession: useCookieRefresh,
+        browserSessionScope: browserScope,
+      ).toJson(),
     ),
   );
   Future<void> register(
@@ -95,19 +203,40 @@ final class HedrionApiClient {
     await request(
       'POST',
       '/api/v1/auth/register',
-      body: {
-        'email': email,
-        'password': password,
-        'displayName': displayName,
-        if (useCookieRefresh) 'browserSession': true,
-        if (useCookieRefresh) 'browserSessionScope': browserScope,
-      },
+      body: RegisterRequestDto(
+        email: email,
+        password: password,
+        displayName: displayName,
+        browserSession: useCookieRefresh,
+        browserSessionScope: browserScope,
+      ).toJson(),
     ),
   );
   Future<void> _session(Map<String, dynamic> response) async {
-    token = response['token'] as String;
-    refreshToken = response['refreshToken'] as String?;
-    user = response['user'] as Map<String, dynamic>;
+    final session = SessionDto.fromJson(response);
+    if (session.refreshExpiresAt != null &&
+        !clock().toUtc().isBefore(session.refreshExpiresAt!)) {
+      await _clearSession(expired: true);
+      throw const DomainException(DomainError(ErrorCode.sessionExpired));
+    }
+    _expirationNotified = false;
+    token = session.token;
+    refreshToken = session.refreshToken;
+    user = session.user.toJson();
+    expiresAt = session.expiresAt;
+    refreshExpiresAt = session.refreshExpiresAt;
+    _scheduleExpiration();
+    if (!useCookieRefresh) {
+      await sessionStorage?.write(
+        StoredSession(
+          token: token!,
+          refreshToken: refreshToken,
+          user: user!,
+          expiresAt: expiresAt,
+          refreshExpiresAt: refreshExpiresAt,
+        ),
+      );
+    }
     await onSessionChanged?.call();
   }
 
@@ -115,31 +244,34 @@ final class HedrionApiClient {
     await request(
       'POST',
       '/api/v1/auth/refresh',
-      body: {
-        if (!useCookieRefresh) 'refreshToken': refreshToken,
-        if (useCookieRefresh) 'browserSession': true,
-        if (useCookieRefresh) 'browserSessionScope': browserScope,
-      },
+      body: RefreshRequestDto(
+        refreshToken: useCookieRefresh ? null : refreshToken,
+        browserSession: useCookieRefresh,
+        browserSessionScope: browserScope,
+      ).toJson(),
     ),
   );
-  Future<Map<String, dynamic>> me() async =>
-      user = await request('GET', '/api/v1/me');
+  Future<Map<String, dynamic>> me() async {
+    final identity = await request('GET', '/api/v1/me');
+    if (token == null) {
+      throw const DomainException(DomainError(ErrorCode.sessionExpired));
+    }
+    return user = identity;
+  }
+
   Future<void> logout() async {
     try {
       await request(
         'POST',
         '/api/v1/auth/logout',
-        body: {
-          'refreshToken': refreshToken,
-          if (useCookieRefresh) 'browserSession': true,
-          if (useCookieRefresh) 'browserSessionScope': browserScope,
-        },
+        body: RefreshRequestDto(
+          refreshToken: useCookieRefresh ? null : refreshToken,
+          browserSession: useCookieRefresh,
+          browserSessionScope: browserScope,
+        ).toJson(),
       );
     } finally {
-      token = null;
-      refreshToken = null;
-      user = null;
-      await onSessionChanged?.call();
+      await _clearSession();
     }
   }
 
@@ -175,9 +307,13 @@ final class HedrionApiClient {
         return await _uploadImage(id, bytes, mime: mime, retrySession: false);
       }
       if (response.statusCode >= 400) {
+        if (response.statusCode == 401 && token != null) {
+          await _clearSession(expired: true);
+          throw const DomainException(DomainError(ErrorCode.sessionExpired));
+        }
         throw DomainException(_error(response.statusCode, json));
       }
-      return Asset.fromJson((json['asset'] ?? json) as Map<String, dynamic>);
+      return assetFromResponse(json);
     } on DomainException {
       rethrow;
     } catch (_) {
@@ -191,17 +327,21 @@ final class HedrionApiClient {
     required String idempotencyKey,
     String inputType = 'image_to_3d',
     String? sourcePrompt,
+    String? modelProvider,
+    int seed = 42,
   }) => request(
     'POST',
     '/api/v1/assets/${id.value}/generations',
-    body: {
-      'inputType': inputType,
-      'sourcePrompt': sourcePrompt,
-      'baseRevision': baseRevision,
-    },
+    body: GenerationRequestDto(
+      inputType: inputType,
+      sourcePrompt: sourcePrompt,
+      modelProvider: modelProvider,
+      seed: seed,
+      baseRevision: baseRevision,
+    ).toJson(),
     revision: baseRevision,
     key: idempotencyKey,
-  );
+  ).then((json) => GenerationResponseDto.fromJson(json).toJson());
   Future<Uint8List> download(Asset asset) async {
     final info = await request(
       'GET',
@@ -239,6 +379,10 @@ final class HedrionApiClient {
         return await _fileBytes(path, retrySession: false);
       }
       if (response.statusCode >= 400) {
+        if (response.statusCode == 401 && token != null) {
+          await _clearSession(expired: true);
+          throw const DomainException(DomainError(ErrorCode.sessionExpired));
+        }
         throw DomainException(
           _error(
             response.statusCode,
@@ -254,33 +398,14 @@ final class HedrionApiClient {
     }
   }
 
-  void close() => _client.close();
+  void close() {
+    _expirationTimer?.cancel();
+    _client.close();
+  }
 }
 
-DomainError _error(int status, Map<String, dynamic> json) {
-  final code =
-      (json['code'] ??
-              (json['error'] is Map ? (json['error'] as Map)['code'] : null))
-          ?.toString() ??
-      '';
-  final normalized = code.replaceAll('_', '').toLowerCase();
-  final matched = ErrorCode.values
-      .where((v) => v.name.toLowerCase() == normalized)
-      .firstOrNull;
-  return DomainError(
-    matched ??
-        switch (status) {
-          401 => ErrorCode.unauthenticated,
-          403 => ErrorCode.forbidden,
-          404 => ErrorCode.notFound,
-          409 => ErrorCode.revisionConflict,
-          429 => ErrorCode.dailyGenerationQuotaExceeded,
-          400 || 422 => ErrorCode.invalidInput,
-          _ => ErrorCode.unavailable,
-        },
-    json['details'],
-  );
-}
+DomainError _error(int status, Map<String, dynamic> json) =>
+    errorFromDto(ApiErrorDto.fromJson(json), status: status);
 
 abstract interface class SyncAssetRepository {
   Future<Asset> syncAsset(
@@ -318,14 +443,14 @@ final class ApiAssetRepository
       '/api/v1/assets/${id.value}/submissions',
       revision: baseRevision,
       key: idempotencyKey,
-      body: {
-        'baseRevision': baseRevision,
-        'license': license.name,
-        'allowDownload': allowDownload,
-        'confirmRights': confirmRights,
-      },
+      body: PublicationRequestDto(
+        baseRevision: baseRevision,
+        license: license.name,
+        allowDownload: allowDownload,
+        confirmRights: confirmRights,
+      ).toJson(),
     );
-    return Asset.fromJson(json['asset'] as Map<String, dynamic>);
+    return assetFromResponse(json);
   }
 
   @override
@@ -361,7 +486,7 @@ final class ApiAssetRepository
         _error(result['status'] == 'conflict' ? 409 : 422, result),
       );
     }
-    return Asset.fromJson(result['asset'] as Map<String, dynamic>);
+    return assetFromResponse(result);
   }
 
   @override
@@ -381,8 +506,9 @@ final class ApiAssetRepository
             ? path
             : '$path?cursor=${Uri.encodeQueryComponent(cursor)}',
       );
-      for (final value in json['assets'] as List<dynamic>) {
-        final asset = Asset.fromJson(Map<String, dynamic>.from(value as Map));
+      final page = AssetPageDto.fromJson(json);
+      for (final value in page.assets) {
+        final asset = assetFromDto(value);
         assets.putIfAbsent(asset.id.value, () => asset);
       }
       if (moderator) {
@@ -390,14 +516,16 @@ final class ApiAssetRepository
           stats = Map<String, dynamic>.from(json['stats'] as Map);
         }
         for (final value in json['submissions'] as List<dynamic>? ?? const []) {
-          final submission = Map<String, dynamic>.from(value as Map);
+          final submission = PublicationSubmissionDto.fromJson(
+            Map<String, dynamic>.from(value as Map),
+          ).toJson();
           submissions.putIfAbsent(
             submission['assetId'] as String,
             () => Map.unmodifiable(submission),
           );
         }
       }
-      cursor = json['nextCursor'] as String?;
+      cursor = page.nextCursor;
       if (cursor != null && (cursor.isEmpty || !seen.add(cursor))) {
         throw const DomainException(DomainError(ErrorCode.unavailable));
       }
@@ -423,9 +551,9 @@ final class ApiAssetRepository
     final json = await client.request(
       'POST',
       '/api/v1/assets',
-      body: draft.toJson(),
+      body: draftToDto(draft).toJson(),
     );
-    return Asset.fromJson((json['asset'] ?? json) as Map<String, dynamic>);
+    return assetFromResponse(json);
   }
 
   @override
@@ -442,17 +570,18 @@ final class ApiAssetRepository
       'PATCH',
       '/api/v1/assets/${asset.id.value}',
       revision: baseRevision,
-      body: {
-        'title': asset.title.trim(),
-        'description': asset.description,
-        'favorite': asset.favorite,
-        'category': asset.category,
-        'projectId': asset.projectId,
-        'tags': asset.tags,
-        'baseRevision': baseRevision,
-      },
+      body: AssetUpdateDto(
+        baseRevision: baseRevision,
+        title: asset.title.trim(),
+        description: asset.description,
+        favorite: asset.favorite,
+        category: asset.category,
+        projectId: asset.projectId,
+        hasProjectId: true,
+        tags: asset.tags,
+      ).toJson(),
     );
-    return Asset.fromJson((json['asset'] ?? json) as Map<String, dynamic>);
+    return assetFromResponse(json);
   }
 
   @override
@@ -477,12 +606,12 @@ final class ApiAssetRepository
         '/api/v1/assets/${id.value}/submissions',
         revision: baseRevision,
         key: key,
-        body: {
-          'baseRevision': baseRevision,
-          'license': 'ccBy',
-          'allowDownload': true,
-          'confirmRights': true,
-        },
+        body: PublicationRequestDto(
+          baseRevision: baseRevision,
+          license: 'ccBy',
+          allowDownload: true,
+          confirmRights: true,
+        ).toJson(),
       );
     } else if (target == AssetLifecycle.published ||
         target == AssetLifecycle.rejected) {
@@ -496,10 +625,10 @@ final class ApiAssetRepository
         '/api/v1/moderation/submissions/$submissionId/${target == AssetLifecycle.published ? 'approve' : 'reject'}',
         revision: _submissionRevisions[id.value],
         key: key,
-        body: {
-          'baseRevision': _submissionRevisions[id.value],
-          'reason': reason,
-        },
+        body: ModerationRequestDto(
+          baseRevision: _submissionRevisions[id.value],
+          reason: reason,
+        ).toJson(),
       );
     } else {
       json = await client.request(
@@ -507,11 +636,15 @@ final class ApiAssetRepository
         '/api/v1/assets/${id.value}/transition',
         revision: baseRevision,
         key: key,
-        body: {'target': target.name, 'baseRevision': baseRevision},
+        body: AssetTransitionDto(
+          target: target.name,
+          baseRevision: baseRevision,
+          reason: reason,
+        ).toJson(),
       );
     }
     if (json['asset'] is Map<String, dynamic>) {
-      return Asset.fromJson(json['asset'] as Map<String, dynamic>);
+      return assetFromResponse(json);
     }
     final fresh = await loadAssets();
     return fresh.firstWhere((a) => a.id == id);
@@ -523,7 +656,7 @@ final class ApiAssetRepository
       'DELETE',
       '/api/v1/assets/${id.value}',
       revision: baseRevision,
-      body: {'baseRevision': baseRevision},
+      body: RevisionRequestDto(baseRevision: baseRevision).toJson(),
     );
   }
 }

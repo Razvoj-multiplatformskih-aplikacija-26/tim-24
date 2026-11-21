@@ -4,12 +4,16 @@ environment:
   sdk: '>=3.10.0 <4.0.0'
 workspace:
   - packages/domain
+  - packages/hedrion_contract
+  - packages/hedrion_mapping
+  - packages/platform_session
   - packages/blocs
   - packages/hedrion_api_client
   - apps/mobile
   - apps/backoffice
   - apps/public_web
   - services/api
+  - apps/server
 dev_dependencies:
   domain: any
   hedrion_api_client: any

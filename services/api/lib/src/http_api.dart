@@ -2,8 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:shelf/shelf.dart';
-import 'package:shelf_router/shelf_router.dart';
+import 'package:relic/relic.dart';
+import 'package:hedrion_contract/hedrion_contract.dart';
 import 'database.dart';
 import 'scheduler.dart';
 import 'security.dart';
@@ -21,90 +21,88 @@ class HttpApi {
   final List<String> origins;
   final String workerSecret;
   final bool secureCookies;
-  final Router router = Router();
+  final RelicRouter router = RelicRouter();
   final Map<String, ({DateTime start, int count})> _rateLimits = {};
-  Handler get handler => (request) async {
-        final requestId = newId(), origin = request.headers['origin'];
-        final headers = <String, String>{
-          'x-request-id': requestId,
-          'x-content-type-options': 'nosniff',
-          'cache-control': 'no-store',
-          'referrer-policy': 'no-referrer'
-        };
-        if (origin != null) {
-          if (!origins.contains(origin)) {
-            return response(
-                403,
-                {
-                  'code': 'originDenied',
-                  'message': 'Poreklo pristupa nije dozvoljeno.',
-                  'requestId': requestId
-                },
-                headers);
-          }
-          headers.addAll({
-            'access-control-allow-origin': origin,
-            'access-control-allow-credentials': 'true',
-            'vary': 'Origin',
-            'access-control-allow-methods': 'GET,POST,PATCH,DELETE,PUT,OPTIONS',
-            'access-control-allow-headers':
-                'Authorization,Content-Type,Idempotency-Key,If-Match,X-File-Length,Range',
-            'access-control-expose-headers':
-                'Content-Length,Content-Range,X-Request-Id'
-          });
+  Future<Response> handler(Request request) async {
+    final requestId = newId(), origin = request.header('origin');
+    final headers = <String, String>{
+      'x-request-id': requestId,
+      'x-content-type-options': 'nosniff',
+      'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer'
+    };
+    if (origin != null) {
+      if (!origins.contains(origin)) {
+        return response(
+            403,
+            {
+              'code': 'originDenied',
+              'message': 'Poreklo pristupa nije dozvoljeno.',
+              'requestId': requestId
+            },
+            headers);
+      }
+      headers.addAll({
+        'access-control-allow-origin': origin,
+        'access-control-allow-credentials': 'true',
+        'vary': 'Origin',
+        'access-control-allow-methods': 'GET,POST,PATCH,DELETE,PUT,OPTIONS',
+        'access-control-allow-headers':
+            'Authorization,Content-Type,Idempotency-Key,If-Match,X-File-Length,Range',
+        'access-control-expose-headers':
+            'Content-Length,Content-Range,X-Request-Id'
+      });
+    }
+    if (request.method == Method.options) {
+      return Response(204, headers: _headers(headers));
+    }
+    try {
+      final path = request.url.path;
+      final endpoint = path.contains('/auth/')
+          ? 'auth'
+          : path.contains('/public/')
+              ? 'public'
+              : path.contains('/generations')
+                  ? 'generation'
+                  : 'general';
+      _limit(
+          '${request.connectionInfo.remote.address.toString()}:$endpoint',
+          endpoint == 'auth'
+              ? 30
+              : endpoint == 'generation'
+                  ? 60
+                  : 600);
+      final result = await router.call(request) as Response;
+      return result.copyWith(headers: result.headers.transform((h) {
+        for (final entry in headers.entries) {
+          h[entry.key] = [entry.value];
         }
-        if (request.method == 'OPTIONS') return Response(204, headers: headers);
-        try {
-          final path = request.url.path;
-          final endpoint = path.contains('/auth/')
-              ? 'auth'
-              : path.contains('/public/')
-                  ? 'public'
-                  : path.contains('/generations')
-                      ? 'generation'
-                      : 'general';
-          final info = request.context['shelf.io.connection_info']
-              as HttpConnectionInfo?;
-          _limit(
-              '${info?.remoteAddress.address ?? 'local'}:$endpoint',
-              endpoint == 'auth'
-                  ? 30
-                  : endpoint == 'generation'
-                      ? 60
-                      : 600);
-          return (await router.call(request)).change(headers: headers);
-        } on ApiFailure catch (error) {
-          return response(
-              error.status,
-              {
-                'code': error.code,
-                'message': error.message,
-                if (error.details != null) 'details': error.details,
-                'requestId': requestId
-              },
-              headers);
-        } on FormatException {
-          return response(
-              400,
-              {
-                'code': 'invalidJson',
-                'message': 'Neispravan zahtev.',
-                'requestId': requestId
-              },
-              headers);
-        } catch (error) {
-          stderr
-              .writeln('API request $requestId failed (${error.runtimeType}).');
-          return response(
-              500,
-              {
-                'code': 'serverError',
-                'message': 'Serverska greška. Pokušajte ponovo.',
-                'requestId': requestId
-              },
-              headers);
-        }
-      };
+      }));
+    } on ApiFailure catch (error) {
+      return response(
+          error.status, error.toDto(requestId: requestId).toJson(), headers);
+    } on FormatException {
+      return response(
+          400,
+          {
+            'code': 'invalidJson',
+            'message': 'Neispravan zahtev.',
+            'requestId': requestId
+          },
+          headers);
+    } catch (error) {
+      stderr.writeln('API request $requestId failed (${error.runtimeType}).');
+      return response(
+          500,
+          {
+            'code': 'serverError',
+            'message': 'Serverska greška. Pokušajte ponovo.',
+            'requestId': requestId
+          },
+          headers);
+    }
+  }
+
   void _limit(String key, int max) {
     final now = DateTime.now();
     final old = _rateLimits[key];
@@ -124,7 +122,7 @@ class HttpApi {
   }
 
   String? token(Request request) {
-    final header = request.headers['authorization'];
+    final header = request.header('authorization');
     return header != null && header.startsWith('Bearer ')
         ? header.substring(7)
         : null;
@@ -133,7 +131,7 @@ class HttpApi {
   Future<Identity> user(Request request) =>
       service.authenticate(token(request));
   String key(Request request) {
-    final key = request.headers['idempotency-key'];
+    final key = request.header('idempotency-key');
     if (key == null || key.length < 8 || key.length > 200) {
       throw const ApiFailure(422, 'idempotencyKeyRequired',
           'Potreban je Idempotency-Key od 8 do 200 znakova.');
@@ -158,43 +156,43 @@ class HttpApi {
   Future<Json> revisionBody(Request request) async {
     final input = await body(request);
     if (!input.containsKey('baseRevision') &&
-        request.headers['if-match'] != null) {
+        request.header('if-match') != null) {
       input['baseRevision'] =
-          int.tryParse(request.headers['if-match']!.replaceAll('"', ''));
+          int.tryParse(request.header('if-match')!.replaceAll('"', ''));
     }
     return input;
   }
 
   void _routes() {
+    router.get('/api/v1/capabilities',
+        (_) => response(200, service.generationCapabilities));
     router.get(
-        '/api/v1/capabilities',
+        '/health',
         (_) => response(200, {
-              'provider': service.generationProvider,
-              'imageTo3d': true,
-              'textTo3d': service.generationProvider == 'fake',
-              'demo': service.generationProvider == 'fake'
+              'status': 'ok',
+              'service': 'hedrion-api',
+              'framework': 'Relic',
+              'frameworkVersion': '1.2.0'
             }));
-    router.get('/health',
-        (_) => response(200, {'status': 'ok', 'service': 'hedrion-api'}));
     router.post('/api/v1/auth/register', (Request r) async {
-      final input = await body(r);
+      final input = RegisterRequestDto.fromJson(await body(r)).toJson();
       _browserOrigin(r, input);
       return _authResponse(201, await service.register(input),
           browser: input['browserSession'] == true, scope: _scope(input));
     });
     router.post('/api/v1/auth/login', (Request r) async {
-      final input = await body(r);
+      final input = LoginRequestDto.fromJson(await body(r)).toJson();
       _browserOrigin(r, input);
       return _authResponse(200, await service.login(input),
           browser: input['browserSession'] == true, scope: _scope(input));
     });
     router.post('/api/v1/auth/refresh', (Request r) async {
-      final input = await body(r);
+      final input = RefreshRequestDto.fromJson(await body(r)).toJson();
       _browserOrigin(r, input);
       if (input['browserSession'] == true) {
         final token = _refreshCookie(r, _scope(input));
         if (token == null) {
-          throw const ApiFailure(401, 'invalidRefresh', 'Sesija je istekla.');
+          throw const ApiFailure(401, 'unauthenticated', 'Prijavite se.');
         }
         input['refreshToken'] = token;
       }
@@ -202,54 +200,67 @@ class HttpApi {
           browser: input['browserSession'] == true, scope: _scope(input));
     });
     router.post('/api/v1/auth/logout', (Request r) async {
-      final input = await body(r);
+      final input = RefreshRequestDto.fromJson(await body(r)).toJson();
       _browserOrigin(r, input);
-      await user(r);
-      await service.logout(token(r)!);
+      await service.logout(token(r),
+          refreshToken: input['browserSession'] == true
+              ? _refreshCookie(r, _scope(input))
+              : input['refreshToken'] as String?);
       return response(200, {'loggedOut': true},
           {'set-cookie': _cookie('', _scope(input), maxAge: 0)});
     });
-    router.get('/api/v1/me',
-        (Request r) async => response(200, (await user(r)).toJson()));
+    router.get(
+        '/api/v1/me',
+        (Request r) async => response(
+            200, IdentityDto.fromJson((await user(r)).toJson()).toJson()));
     router.get('/api/v1/assets', (Request r) async {
-      final limit =
-          (int.tryParse(r.url.queryParameters['limit'] ?? '100') ?? 100)
-              .clamp(1, 100);
+      final request = PageRequestDto.fromQuery(r.url.queryParameters);
+      final limit = request.limit.clamp(1, 100);
       final assets = await service.listAssets(await user(r),
-          cursor: r.url.queryParameters['cursor'], limit: limit + 1);
+          cursor: request.cursor, limit: limit + 1);
       final page = assets.take(limit).toList();
-      return response(200, {
-        'assets': page,
-        'nextCursor': assets.length > limit ? page.last['id'] : null,
-      });
+      return response(
+          200,
+          AssetPageDto(
+                  assets: page.map(AssetDto.fromJson).toList(),
+                  nextCursor:
+                      assets.length > limit ? page.last['id'] as String : null)
+              .toJson());
     });
     router.post(
         '/api/v1/assets',
         (Request r) async => response(
-            201, await service.createAsset(await user(r), await body(r))));
-    router.get(
-        '/api/v1/assets/<id>',
-        (Request r, String id) async =>
-            response(200, await service.getAsset(await user(r), id)));
-    router.patch(
-        '/api/v1/assets/<id>',
-        (Request r, String id) async => response(
-            200,
-            await service.updateAsset(await user(r), id, await revisionBody(r),
-                key: r.headers['idempotency-key'])));
-    router.delete(
-        '/api/v1/assets/<id>',
-        (Request r, String id) async => response(
-            200,
-            await service.deleteAsset(
-                await user(r), id, await revisionBody(r))));
-    router.post(
-        '/api/v1/assets/<id>/transition',
-        (Request r, String id) async => response(
-            200,
-            await service.transition(
-                await user(r), id, await revisionBody(r))));
-    router.post('/api/v1/assets/<id>/upload-url', (Request r, String id) async {
+            201,
+            await service.createAsset(await user(r),
+                AssetDraftDto.fromJson(await body(r)).toJson())));
+    router.get('/api/v1/assets/:id', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(200, await service.getAsset(await user(r), id));
+    });
+    router.patch('/api/v1/assets/:id', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(
+          200,
+          await service.updateAsset(await user(r), id,
+              AssetUpdateDto.fromJson(await revisionBody(r)).toJson(),
+              key: r.header('idempotency-key')));
+    });
+    router.delete('/api/v1/assets/:id', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(
+          200,
+          await service.deleteAsset(await user(r), id,
+              RevisionRequestDto.fromJson(await revisionBody(r)).toJson()));
+    });
+    router.post('/api/v1/assets/:id/transition', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(
+          200,
+          await service.transition(await user(r), id,
+              AssetTransitionDto.fromJson(await revisionBody(r)).toJson()));
+    });
+    router.post('/api/v1/assets/:id/upload-url', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
       final identity = await user(r), input = await body(r);
       await service.getAsset(identity, id);
       final length = input['byteLength'];
@@ -268,9 +279,9 @@ class HttpApi {
             'Quota is atomically reserved when the transfer starts; this URL grants no bypass.'
       });
     });
-    router.put('/api/v1/assets/<id>/source', _upload);
-    router.get('/api/v1/assets/<id>/download-url',
-        (Request r, String id) async {
+    router.put('/api/v1/assets/:id/source', _upload);
+    router.get('/api/v1/assets/:id/download-url', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
       final identity = await user(r),
           asset = await service.getAsset(identity, id);
       final fileId = asset['outputFileId'];
@@ -284,27 +295,31 @@ class HttpApi {
         'mime': info['mime']
       });
     });
-    router.get(
-        '/api/v1/files/<id>',
-        (Request r, String id) async =>
-            _download(r, await service.fileInfo(await user(r), id)));
-    router.post(
-        '/api/v1/assets/<id>/generations',
-        (Request r, String id) async => response(202,
-            await service.generate(await user(r), id, await body(r), key(r))));
-    router.get(
-        '/api/v1/assets/<id>/generations',
-        (Request r, String id) async =>
-            response(200, {'jobs': await service.jobs(await user(r), id)}));
-    router.get(
-        '/api/v1/generations/<id>',
-        (Request r, String id) async =>
-            response(200, await service.job(await user(r), id)));
-    router.post(
-        '/api/v1/generations/<id>/cancel',
-        (Request r, String id) async =>
-            response(200, await service.cancel(await user(r), id)));
-    router.post('/api/v1/generations/<id>/retry', (Request r, String id) async {
+    router.get('/api/v1/files/:id', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return _download(r, await service.fileInfo(await user(r), id));
+    });
+    router.post('/api/v1/assets/:id/generations', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(
+          202,
+          await service.generate(await user(r), id,
+              GenerationRequestDto.fromJson(await body(r)).toJson(), key(r)));
+    });
+    router.get('/api/v1/assets/:id/generations', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(200, {'jobs': await service.jobs(await user(r), id)});
+    });
+    router.get('/api/v1/generations/:id', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(200, await service.job(await user(r), id));
+    });
+    router.post('/api/v1/generations/:id/cancel', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(200, await service.cancel(await user(r), id));
+    });
+    router.post('/api/v1/generations/:id/retry', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
       final identity = await user(r),
           old = await service.job(identity, id),
           input = await revisionBody(r);
@@ -320,14 +335,20 @@ class HttpApi {
               {
                 'inputType': old['inputType'],
                 'sourcePrompt': old['sourcePrompt'],
+                if (old['modelProvider'] != null || old['provider'] != null)
+                  'modelProvider': old['modelProvider'] ?? old['provider'],
+                if (old['seed'] != null) 'seed': old['seed'],
                 'baseRevision': input['baseRevision']
               },
               key(r)));
     });
-    router.post(
-        '/api/v1/assets/<id>/submissions',
-        (Request r, String id) async => response(201,
-            await service.submit(await user(r), id, await body(r), key(r))));
+    router.post('/api/v1/assets/:id/submissions', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(
+          201,
+          await service.submit(await user(r), id,
+              PublicationRequestDto.fromJson(await body(r)).toJson(), key(r)));
+    });
     router.get(
         '/api/v1/my/submissions',
         (Request r) async => response(
@@ -337,10 +358,10 @@ class HttpApi {
                 cursor: r.url.queryParameters['cursor'],
                 limit: int.tryParse(r.url.queryParameters['limit'] ?? '100') ??
                     100)));
-    router.post(
-        '/api/v1/submissions/<id>/withdraw',
-        (Request r, String id) async =>
-            response(200, await service.withdraw(await user(r), id)));
+    router.post('/api/v1/submissions/:id/withdraw', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(200, await service.withdraw(await user(r), id));
+    });
     router.get(
         '/api/v1/moderation/submissions',
         (Request r) async => response(
@@ -349,23 +370,34 @@ class HttpApi {
                 cursor: r.url.queryParameters['cursor'],
                 limit: int.tryParse(r.url.queryParameters['limit'] ?? '100') ??
                     100)));
-    router.get('/api/v1/moderation/submissions/<id>',
-        (Request r, String id) async {
+    router.get('/api/v1/moderation/submissions/:id', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
       return response(
           200, await service.moderationSubmission(await user(r), id));
     });
-    router.post(
-        '/api/v1/moderation/submissions/<id>/approve',
-        (Request r, String id) async => response(
-            200,
-            await service.moderate(
-                await user(r), id, true, await revisionBody(r), key(r))));
-    router.post(
-        '/api/v1/moderation/submissions/<id>/reject',
-        (Request r, String id) async => response(
-            200,
-            await service.moderate(
-                await user(r), id, false, await revisionBody(r), key(r))));
+    router.post('/api/v1/moderation/submissions/:id/approve',
+        (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(
+          200,
+          await service.moderate(
+              await user(r),
+              id,
+              true,
+              ModerationRequestDto.fromJson(await revisionBody(r)).toJson(),
+              key(r)));
+    });
+    router.post('/api/v1/moderation/submissions/:id/reject', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(
+          200,
+          await service.moderate(
+              await user(r),
+              id,
+              false,
+              ModerationRequestDto.fromJson(await revisionBody(r)).toJson(),
+              key(r)));
+    });
     router.get(
         '/api/v1/projects',
         (Request r) async =>
@@ -374,12 +406,11 @@ class HttpApi {
         '/api/v1/projects',
         (Request r) async =>
             response(201, await service.project(await user(r), await body(r))));
-    router.patch(
-        '/api/v1/projects/<id>',
-        (Request r, String id) async => response(
-            200,
-            await service.project(await user(r), await revisionBody(r),
-                id: id)));
+    router.patch('/api/v1/projects/:id', (Request r) async {
+      final id = r.pathParameters.raw[#id]!;
+      return response(200,
+          await service.project(await user(r), await revisionBody(r), id: id));
+    });
     router.post('/api/v1/sync/operations', (Request r) async {
       final identity = await user(r), input = await body(r);
       final operations = input['operations'];
@@ -408,8 +439,7 @@ class HttpApi {
             'id': operationId,
             'clientOperationId': operationId,
             'status': error.status == 409 ? 'conflict' : 'failed',
-            'code': error.code,
-            'message': error.message
+            ...error.toDto().toJson()
           });
         }
       }
@@ -425,12 +455,13 @@ class HttpApi {
                   limit: int.tryParse(r.url.queryParameters['limit'] ?? '24') ??
                       24)
             }));
-    router.get(
-        '/api/v1/public/assets/<slug>',
-        (Request r, String slug) async =>
-            response(200, await service.publicAsset(slug)));
-    router.get('/api/v1/public/assets/<slug>/files/<kind>',
-        (Request r, String slug, String kind) async {
+    router.get('/api/v1/public/assets/:slug', (Request r) async {
+      final slug = r.pathParameters.raw[#slug]!;
+      return response(200, await service.publicAsset(slug));
+    });
+    router.get('/api/v1/public/assets/:slug/files/:kind', (Request r) async {
+      final slug = r.pathParameters.raw[#slug]!;
+      final kind = r.pathParameters.raw[#kind]!;
       if (!['model', 'preview'].contains(kind)) {
         throw const ApiFailure(404, 'notFound', 'Fajl nije pronađen.');
       }
@@ -446,17 +477,15 @@ class HttpApi {
                       .map((r) => r['category'])
                       .toList())
             }));
-    router.post('/internal/v1/generations/<id>/callback', _callback);
-    router.all(
-        '/<ignored|.*>',
-        (Request _, String ignored) => response(
-            404, {'code': 'notFound', 'message': 'Putanja nije pronađena.'}));
+    router.post('/internal/v1/generations/:id/callback', _callback);
+    router.fallback = (_) => response(
+        404, {'code': 'notFound', 'message': 'Putanja nije pronađena.'});
   }
 
   void _browserOrigin(Request request, Json input) {
     _scope(input);
     if (input['browserSession'] == true &&
-        !origins.contains(request.headers['origin'])) {
+        !origins.contains(request.header('origin'))) {
       throw const ApiFailure(
           403, 'originRequired', 'Browser sesija zahteva dozvoljeno poreklo.');
     }
@@ -472,7 +501,7 @@ class HttpApi {
   }
 
   String? _refreshCookie(Request request, String scope) {
-    for (final part in (request.headers['cookie'] ?? '').split(';')) {
+    for (final part in (request.header('cookie') ?? '').split(';')) {
       final pair = part.trim().split('=');
       if (pair.length == 2 && pair.first == 'hedrion_refresh_$scope') {
         return pair[1];
@@ -481,18 +510,25 @@ class HttpApi {
     return null;
   }
 
-  String _cookie(String value, String scope, {int maxAge = 2592000}) =>
-      'hedrion_refresh_$scope=$value; Path=/api/v1/auth; Max-Age=$maxAge; HttpOnly; SameSite=Strict${secureCookies ? '; Secure' : ''}';
-  Response _authResponse(int status, Json session,
+  String _cookie(String value, String scope, {int? maxAge}) =>
+      'hedrion_refresh_$scope=$value; Path=/api/v1/auth; Max-Age=${maxAge ?? service.sessionRefreshTtl.inSeconds}; HttpOnly; SameSite=Strict${secureCookies ? '; Secure' : ''}';
+  Response _authResponse(int status, Json rawSession,
       {required bool browser, required String scope}) {
+    final session = SessionDto.fromJson(rawSession).toJson();
     if (!browser) return response(status, session);
     final refresh = session.remove('refreshToken') as String;
-    return response(status, session, {'set-cookie': _cookie(refresh, scope)});
+    final deadline = DateTime.parse(session['refreshExpiresAt'] as String);
+    final remainingSeconds = deadline.difference(service.now).inSeconds;
+    return response(status, session, {
+      'set-cookie': _cookie(refresh, scope,
+          maxAge: remainingSeconds < 0 ? 0 : remainingSeconds)
+    });
   }
 
-  Future<Response> _upload(Request request, String id) async {
+  Future<Response> _upload(Request request) async {
+    final id = request.pathParameters.raw[#id]!;
     final identity = await user(request),
-        length = int.tryParse(request.headers['x-file-length'] ?? '');
+        length = int.tryParse(request.header('x-file-length') ?? '');
     if (length == null ||
         length <= 0 ||
         length > HedrionService.maxUploadBytes) {
@@ -501,15 +537,15 @@ class HttpApi {
     }
     // Use HTTP framing as the authoritative size. A caller must not obtain a
     // small reservation while streaming an unbounded/chunked request body.
-    if (request.contentLength == null) {
+    if (request.body.contentLength == null) {
       throw const ApiFailure(411, 'lengthRequired',
           'Otpremanje zahteva unapred poznatu Content-Length veličinu.');
     }
-    if (request.contentLength != length) {
+    if (request.body.contentLength != length) {
       throw const ApiFailure(422, 'lengthMismatch',
           'Content-Length i X-File-Length moraju biti jednaki.');
     }
-    final mime = request.headers['content-type']?.split(';').first;
+    final mime = request.header('content-type')?.split(';').first;
     if (!['image/png', 'image/jpeg'].contains(mime)) {
       throw const ApiFailure(422, 'invalidMime', 'Podržani su PNG i JPEG.');
     }
@@ -573,7 +609,7 @@ class HttpApi {
     }
     final length = info['byte_length'] as int;
     var start = 0, end = length - 1, status = 200;
-    final range = request.headers['range'];
+    final range = request.header('range');
     if (range != null) {
       final match = RegExp(r'^bytes=(\d*)-(\d*)$').firstMatch(range);
       if (match == null || length == 0) {
@@ -618,24 +654,29 @@ class HttpApi {
       }
     }
 
-    return Response(status, body: stream(), headers: {
-      'content-type': info['mime'] as String,
-      'content-length': '${end - start + 1}',
-      'accept-ranges': 'bytes',
-      if (status == 206) 'content-range': 'bytes $start-$end/$length',
-      'content-disposition':
-          '${info['kind'] == 'model' ? 'attachment' : 'inline'}; filename="hedrion-${info['id']}.${info['kind'] == 'model' ? 'glb' : info['mime'] == 'image/png' ? 'png' : 'jpg'}"'
-    });
+    return Response(status,
+        body: Body.fromDataStream(stream().map(Uint8List.fromList),
+            contentLength: end - start + 1,
+            mimeType: MimeType.parse(info['mime'] as String)),
+        headers: _headers({
+          'content-type': info['mime'] as String,
+          'content-length': '${end - start + 1}',
+          'accept-ranges': 'bytes',
+          if (status == 206) 'content-range': 'bytes $start-$end/$length',
+          'content-disposition':
+              '${info['kind'] == 'model' ? 'attachment' : 'inline'}; filename="hedrion-${info['id']}.${info['kind'] == 'model' ? 'glb' : info['mime'] == 'image/png' ? 'png' : 'jpg'}"'
+        }));
   }
 
-  Future<Response> _callback(Request request, String id) async {
+  Future<Response> _callback(Request request) async {
+    final id = request.pathParameters.raw[#id]!;
     if (!constantTimeEqual(token(request) ?? '', workerSecret)) {
       throw const ApiFailure(
           401, 'workerUnauthorized', 'Neispravan worker nalog.');
     }
-    final timestamp = request.headers['x-hedrion-timestamp'] ?? '',
-        nonce = request.headers['x-hedrion-nonce'] ?? '',
-        signature = request.headers['x-hedrion-signature'] ?? '';
+    final timestamp = request.header('x-hedrion-timestamp') ?? '',
+        nonce = request.header('x-hedrion-nonce') ?? '',
+        signature = request.header('x-hedrion-signature') ?? '';
     final seconds = int.tryParse(timestamp);
     if (seconds == null ||
         (DateTime.now().millisecondsSinceEpoch ~/ 1000 - seconds).abs() > 300 ||
@@ -675,7 +716,15 @@ class HttpApi {
 
 Response response(int status, Object data,
         [Map<String, String> headers = const {}]) =>
-    Response(status, body: jsonEncode(data), headers: {
-      'content-type': 'application/json; charset=utf-8',
-      ...headers
+    Response(status,
+        body: Body.fromString(jsonEncode(data), mimeType: MimeType.json),
+        headers: _headers(
+            {'content-type': 'application/json; charset=utf-8', ...headers}));
+
+Headers _headers(Map<String, String> values) => Headers.fromMap({
+      for (final e in values.entries) e.key: [e.value]
     });
+
+extension on Request {
+  String? header(String name) => headers[name]?.join(', ');
+}

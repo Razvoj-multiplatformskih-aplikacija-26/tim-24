@@ -1,0 +1,9 @@
+name: hedrion_server
+description: KT2 Relic 1.2.0 application for the Hedrion API.
+publish_to: none
+resolution: workspace
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+dependencies:
+  hedrion_api: any
+  relic: 1.2.0

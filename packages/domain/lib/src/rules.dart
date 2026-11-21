@@ -16,6 +16,10 @@ enum ErrorCode {
   notFound,
   unavailable,
   unauthenticated,
+  sessionExpired,
+  backofficeRoleRequired,
+  activeJobLimit,
+  serverRuleRejected,
   unsupportedInput,
 }
 
@@ -61,35 +65,120 @@ final class Invalid<T> extends Validation<T> {
 }
 
 String errorMessage(DomainError error) => switch (error.code) {
-  ErrorCode.invalidTitle => 'Naziv mora imati od 3 do 60 znakova.',
-  ErrorCode.invalidDescription => 'Opis može imati najviše 4000 znakova.',
+  ErrorCode.invalidTitle =>
+    'Naziv mora imati od ${_integerDetail(error, 'minLength', 3)} do ${_integerDetail(error, 'maxLength', 60)} znakova.',
+  ErrorCode.invalidDescription =>
+    'Opis može imati najviše ${_integerDetail(error, 'maxLength', 4000)} znakova.',
   ErrorCode.invalidCategory => 'Izaberite podržanu kategoriju.',
-  ErrorCode.invalidInput => 'Uneti podaci nisu ispravni.',
+  ErrorCode.invalidInput => _inputMessage(error),
   ErrorCode.forbidden => 'Nemate ovlašćenje za ovu akciju.',
   ErrorCode.invalidTransition => 'Promena nije dozvoljena u trenutnom stanju.',
   ErrorCode.missingOutput => 'Model još nema sačuvan GLB rezultat.',
   ErrorCode.rejectionReasonRequired =>
-    'Unesite razlog odbijanja (najmanje 3 znaka).',
+    'Razlog odbijanja mora imati od ${_integerDetail(error, 'minLength', 3)} do ${_integerDetail(error, 'maxLength', 1000)} znakova.',
   ErrorCode.dailyGenerationQuotaExceeded =>
-    'Dnevna kvota za generisanje je popunjena.',
+    'Dnevna kvota za generisanje je popunjena (najviše ${_integerDetail(error, 'limit', 20)} zahteva).',
   ErrorCode.dailyTransferQuotaExceeded =>
-    'Dnevna kvota prenosa fajlova je popunjena.',
+    'Dnevna kvota prenosa fajlova je popunjena (najviše ${_byteLimit(error, 1000000000)}).',
   ErrorCode.storageQuotaExceeded =>
-    'Nema dovoljno prostora u zajedničkom skladištu.',
+    'Nema dovoljno prostora u zajedničkom skladištu (najviše ${_byteLimit(error, 10000000000)}).',
   ErrorCode.revisionConflict =>
     'Model je u međuvremenu izmenjen. Osvežite podatke i ponovite izmenu.',
   ErrorCode.notFound => 'Traženi zapis ne postoji.',
   ErrorCode.unavailable => 'Veza nije dostupna. Pokušajte ponovo.',
   ErrorCode.unauthenticated => 'Prijavite se da biste nastavili.',
+  ErrorCode.sessionExpired => 'Sesija je istekla. Prijavite se ponovo.',
+  ErrorCode.backofficeRoleRequired =>
+    'Backoffice je namenjen moderatorima i administratorima.',
+  ErrorCode.activeJobLimit =>
+    'Već imate aktivan zahtev. Sačekajte njegov završetak.',
+  ErrorCode.serverRuleRejected =>
+    'Akcija trenutno nije dozvoljena. Osvežite podatke i pokušajte ponovo.',
   ErrorCode.unsupportedInput =>
     'Ovaj način generisanja još nije povezan sa pravim providerom.',
 };
 
-Validation<String> validateTitle(String title) {
+int _integerDetail(DomainError error, String key, int fallback) {
+  final details = error.details;
+  final value = details is Map ? details[key] : null;
+  return value is int && value >= 0 ? value : fallback;
+}
+
+String _inputMessage(DomainError error) {
+  final details = error.details;
+  if (details is Map && details['rule'] == 'publicationLicense') {
+    if (details['confirmRights'] == false) {
+      return 'Potvrdite prava na ulaznu sliku i model.';
+    }
+    if (details['allowDownload'] == true &&
+        details['license'] == AssetLicense.allRightsReserved.name) {
+      return 'Za preuzimanje izaberite CC BY ili CC0 licencu.';
+    }
+    return 'Izaberite podržanu licencu.';
+  }
+  if (details is Map && details['rule'] == 'tags') {
+    return 'Dozvoljeno je najviše ${_integerDetail(error, 'maxTags', 20)} oznaka, do ${_integerDetail(error, 'maxTagLength', 40)} znakova po oznaci.';
+  }
+  return 'Uneti podaci nisu ispravni.';
+}
+
+String _byteLimit(DomainError error, int fallback) {
+  final limit = _integerDetail(error, 'limit', fallback);
+  return limit >= 1000000000 && limit % 1000000000 == 0
+      ? '${limit ~/ 1000000000} GB'
+      : limit >= 1000000 && limit % 1000000 == 0
+      ? '${limit ~/ 1000000} MB'
+      : '$limit bajtova';
+}
+
+/// These are application permissions, shared by server and every client.
+bool canAccessBackoffice(UserRole role) => canModerate(role);
+bool canModerate(UserRole role) =>
+    role == UserRole.moderator || role == UserRole.admin;
+bool canManageAsset(Asset asset, Actor actor) => asset.ownerId == actor.id;
+
+Validation<Actor> validateBackofficeAccess(Actor actor) =>
+    canAccessBackoffice(actor.role)
+    ? Valid(actor)
+    : const Invalid(DomainError(ErrorCode.backofficeRoleRequired));
+
+Validation<Actor> validateModerationAccess(Actor actor) =>
+    canModerate(actor.role)
+    ? Valid(actor)
+    : const Invalid(
+        DomainError(ErrorCode.forbidden, {
+          'requiredRoles': ['moderator', 'admin'],
+        }),
+      );
+
+/// Private records deliberately do not disclose their existence to other users.
+Validation<Asset> validateAssetOwnership(Asset asset, Actor actor) =>
+    canManageAsset(asset, actor)
+    ? Valid(asset)
+    : const Invalid(DomainError(ErrorCode.notFound));
+
+const titleMinLength = 3;
+const titleMaxLength = 60;
+const descriptionMaxLength = 4000;
+const rejectionReasonMinLength = 3;
+const rejectionReasonMaxLength = 1000;
+
+Validation<String> validateTitle(
+  String title, {
+  int minLength = titleMinLength,
+  int maxLength = titleMaxLength,
+}) {
   final normalized = title.trim();
-  return normalized.runes.length >= 3 && normalized.runes.length <= 60
+  final length = normalized.runes.length;
+  return length >= minLength && length <= maxLength
       ? Valid(normalized)
-      : const Invalid(DomainError(ErrorCode.invalidTitle));
+      : Invalid(
+          DomainError(ErrorCode.invalidTitle, {
+            'minLength': minLength,
+            'maxLength': maxLength,
+            'actualLength': length,
+          }),
+        );
 }
 
 const supportedCategories = [
@@ -100,17 +189,33 @@ const supportedCategories = [
   'architecture',
 ];
 Validation<AssetDraft> validateDraft(AssetDraft draft) {
-  if (!validateTitle(draft.title).isValid) {
-    return const Invalid(DomainError(ErrorCode.invalidTitle));
+  final title = validateTitle(draft.title);
+  if (!title.isValid) {
+    return Invalid(title.error!);
   }
-  if (draft.description.length > 4000) {
-    return const Invalid(DomainError(ErrorCode.invalidDescription));
+  if (draft.description.length > descriptionMaxLength) {
+    return Invalid(
+      DomainError(ErrorCode.invalidDescription, {
+        'maxLength': descriptionMaxLength,
+        'actualLength': draft.description.length,
+      }),
+    );
   }
   if (!supportedCategories.contains(draft.category)) {
-    return const Invalid(DomainError(ErrorCode.invalidCategory));
+    return const Invalid(
+      DomainError(ErrorCode.invalidCategory, {
+        'supportedCategories': supportedCategories,
+      }),
+    );
   }
   if (draft.tags.length > 20 || draft.tags.any((tag) => tag.length > 40)) {
-    return const Invalid(DomainError(ErrorCode.invalidInput));
+    return const Invalid(
+      DomainError(ErrorCode.invalidInput, {
+        'rule': 'tags',
+        'maxTags': 20,
+        'maxTagLength': 40,
+      }),
+    );
   }
   return Valid(draft);
 }
@@ -137,7 +242,17 @@ Validation<AssetLifecycle> validateTransition(
   String? reason,
 }) {
   if (!(allowedAssetTransitions[asset.lifecycle]?.contains(target) ?? false)) {
-    return const Invalid(DomainError(ErrorCode.invalidTransition));
+    return Invalid(
+      DomainError(ErrorCode.invalidTransition, {
+        'from': asset.lifecycle.name,
+        'to': target.name,
+        'allowed':
+            allowedAssetTransitions[asset.lifecycle]
+                ?.map((value) => value.name)
+                .toList() ??
+            const <String>[],
+      }),
+    );
   }
   final moderation =
       target == AssetLifecycle.published || target == AssetLifecycle.rejected;
@@ -151,16 +266,13 @@ Validation<AssetLifecycle> validateTransition(
   if (processing && actor.role != UserRole.admin) {
     return const Invalid(DomainError(ErrorCode.forbidden));
   }
-  if (moderation &&
-      actor.role != UserRole.moderator &&
-      actor.role != UserRole.admin) {
-    return const Invalid(DomainError(ErrorCode.forbidden));
+  if (moderation) {
+    final access = validateModerationAccess(actor);
+    if (!access.isValid) return Invalid(access.error!);
   }
-  if (!moderation &&
-      !processing &&
-      asset.ownerId != actor.id &&
-      actor.role != UserRole.admin) {
-    return const Invalid(DomainError(ErrorCode.forbidden));
+  if (!moderation && !processing) {
+    final access = validateAssetOwnership(asset, actor);
+    if (!access.isValid) return Invalid(access.error!);
   }
   if ((target == AssetLifecycle.pendingReview ||
           target == AssetLifecycle.published ||
@@ -169,9 +281,17 @@ Validation<AssetLifecycle> validateTransition(
       !asset.hasOutput) {
     return const Invalid(DomainError(ErrorCode.missingOutput));
   }
+  final reasonLength = reason?.trim().runes.length ?? 0;
   if (target == AssetLifecycle.rejected &&
-      (reason?.trim().runes.length ?? 0) < 3) {
-    return const Invalid(DomainError(ErrorCode.rejectionReasonRequired));
+      (reasonLength < rejectionReasonMinLength ||
+          reasonLength > rejectionReasonMaxLength)) {
+    return Invalid(
+      DomainError(ErrorCode.rejectionReasonRequired, {
+        'minLength': rejectionReasonMinLength,
+        'maxLength': rejectionReasonMaxLength,
+        'actualLength': reasonLength,
+      }),
+    );
   }
   return Valid(target);
 }
@@ -186,7 +306,14 @@ Validation<AssetLicense> validatePublicationLicense(
 }) {
   if (!confirmRights ||
       (allowDownload && license == AssetLicense.allRightsReserved)) {
-    return const Invalid(DomainError(ErrorCode.invalidInput));
+    return Invalid(
+      DomainError(ErrorCode.invalidInput, {
+        'rule': 'publicationLicense',
+        'confirmRights': confirmRights,
+        'allowDownload': allowDownload,
+        'license': license.name,
+      }),
+    );
   }
   return Valid(license);
 }
@@ -220,10 +347,17 @@ Validation<int> validateDailyGenerationQuota(
   int limit = 20,
 }) {
   final day = utcDay(now);
+  if (limit < 0) return const Invalid(DomainError(ErrorCode.invalidInput));
   final count = admissions.where((r) => utcDay(r.acceptedAt) == day).length;
   return count < limit
       ? Valid(count + 1)
-      : const Invalid(DomainError(ErrorCode.dailyGenerationQuotaExceeded));
+      : Invalid(
+          DomainError(ErrorCode.dailyGenerationQuotaExceeded, {
+            'limit': limit,
+            'current': count,
+            'requested': 1,
+          }),
+        );
 }
 
 Validation<int> validateTransferQuota({
@@ -261,5 +395,14 @@ Validation<int> _bytes(
     return const Invalid(DomainError(ErrorCode.invalidInput));
   }
   final total = used + reserved + requested;
-  return total <= limit ? Valid(total) : Invalid(DomainError(code));
+  return total <= limit
+      ? Valid(total)
+      : Invalid(
+          DomainError(code, {
+            'limit': limit,
+            'used': used,
+            'reserved': reserved,
+            'requested': requested,
+          }),
+        );
 }

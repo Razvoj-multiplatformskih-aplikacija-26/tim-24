@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: hedrion
+      POSTGRES_USER: hedrion
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hedrion-local-development-only}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hedrion -d hedrion"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/worker.Dockerfile
+    environment:
+      GENERATION_PROVIDER: fake
+      WORKER_HOST: 0.0.0.0
+      WORKER_PORT: 8091
+      WORKER_SHARED_SECRET: ${WORKER_SHARED_SECRET:-hedrion-local-worker-secret-at-least-32-characters}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=3).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/server.Dockerfile
+    environment:
+      DATABASE_URL: postgres://hedrion:${POSTGRES_PASSWORD:-hedrion-local-development-only}@postgres:5432/hedrion?sslmode=disable
+      API_BIND: 0.0.0.0
+      API_PORT: 8080
+      OBJECT_STORAGE_PATH: /app/objects
+      MIGRATION_FILE: /app/infrastructure/migrations/001_initial.sql
+      SEED_ASSET_PATH: /app/infrastructure/seed
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+      DEMO_CREATOR_PASSWORD: ${DEMO_CREATOR_PASSWORD:-HedrionCreator123!}
+      DEMO_MODERATOR_PASSWORD: ${DEMO_MODERATOR_PASSWORD:-HedrionModerator123!}
+      DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-HedrionAdmin123!}
+      GENERATION_PROVIDER: ${GENERATION_PROVIDER:-fake}
+      ENABLED_GENERATION_MODELS: ${ENABLED_GENERATION_MODELS:-spar3d,hunyuan3d_21,trellis2}
+      WORKER_URL: ${WORKER_URL:-http://worker:8091}
+      WORKER_SHARED_SECRET: ${WORKER_SHARED_SECRET:-hedrion-local-worker-secret-at-least-32-characters}
+      WORKER_TIMEOUT_SECONDS: ${WORKER_TIMEOUT_SECONDS:-2700}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8082,http://localhost:8083,http://localhost:19082,http://localhost:19083,http://127.0.0.1:19082,http://127.0.0.1:19083}
+      SECURE_COOKIES: ${SECURE_COOKIES:-false}
+      SESSION_ACCESS_TTL_SECONDS: ${SESSION_ACCESS_TTL_SECONDS:-900}
+      SESSION_REFRESH_TTL_SECONDS: ${SESSION_REFRESH_TTL_SECONDS:-2592000}
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    volumes:
+      - object_data:/app/objects
+    depends_on:
+      postgres:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/hedrion-server", "--healthcheck"]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 20
+
+volumes:
+  postgres_data:
+  object_data:

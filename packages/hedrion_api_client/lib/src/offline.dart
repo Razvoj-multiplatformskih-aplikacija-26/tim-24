@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:domain/domain.dart';
+import 'package:hedrion_mapping/hedrion_mapping.dart';
 import 'client.dart';
 
 /// Implement with an atomic SQLite transaction on Android. Store is user-scoped.
@@ -41,7 +42,7 @@ final class OfflineAssetRepository
     final snapshot = await persistence.read();
     if (snapshot == null || snapshot['ownerId'] != ownerId.value) return;
     for (final row in snapshot['assets'] as List<dynamic>? ?? []) {
-      final asset = Asset.fromJson(row as Map<String, dynamic>);
+      final asset = assetFromJson(row as Map<String, dynamic>);
       if (asset.ownerId == ownerId) _cache[asset.id.value] = asset;
     }
     for (final row in snapshot['outbox'] as List<dynamic>? ?? []) {
@@ -51,7 +52,7 @@ final class OfflineAssetRepository
         final id = op['entityId'] as String;
         _conflicts[id] = SyncConflict(
           _cache[id]!,
-          Asset.fromJson(Map<String, dynamic>.from(op['server'] as Map)),
+          assetFromJson(Map<String, dynamic>.from(op['server'] as Map)),
         );
       }
     }
@@ -60,7 +61,7 @@ final class OfflineAssetRepository
   Future<void> _persist() => persistence.write({
     'version': 1,
     'ownerId': ownerId.value,
-    'assets': _cache.values.map((a) => a.toJson()).toList(),
+    'assets': _cache.values.map(assetToJson).toList(),
     'outbox': _outbox.values.toList(),
   });
 
@@ -171,7 +172,7 @@ final class OfflineAssetRepository
               .firstOrNull;
           if (server == null) rethrow;
           _conflicts[id] = SyncConflict(_cache[id]!, server);
-          _outbox[id]!['server'] = server.toJson();
+          _outbox[id]!['server'] = assetToJson(server);
           await _persist();
         } else if (e.error.code == ErrorCode.unavailable) {
           online = false;

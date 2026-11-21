@@ -3,6 +3,8 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:domain/domain.dart';
+import 'package:hedrion_contract/hedrion_contract.dart';
+import 'package:hedrion_mapping/hedrion_mapping.dart';
 import 'package:image/image.dart' as image;
 import 'database.dart';
 import 'security.dart';
@@ -13,25 +15,104 @@ class ApiFailure implements Exception {
   final String code;
   final String message;
   final Object? details;
+  ApiErrorDto toDto({String? requestId}) => ApiErrorDto(
+      code: code, details: details, message: message, requestId: requestId);
 }
 
 class Identity {
   Identity(this.id, this.role, this.displayName, this.email);
   final String id, role, displayName, email;
-  Actor get actor => Actor(id: UserId(id), role: UserRole.values.byName(role));
+  Actor get actor => actorFromDto(
+      IdentityDto(id: id, role: role, displayName: displayName, email: email));
   Json toJson() =>
-      {'id': id, 'role': role, 'displayName': displayName, 'email': email};
+      actorToDto(actor, displayName: displayName, email: email).toJson();
 }
 
 class HedrionService {
   HedrionService(this.db, this.storagePath,
       {DateTime Function()? clock,
+      this.sessionAccessTtl = const Duration(hours: 1),
+      this.sessionRefreshTtl = const Duration(days: 30),
       this.generationProvider = 'fake',
+      this.enabledGenerationModels = const [
+        'spar3d',
+        'hunyuan3d_21',
+        'trellis2'
+      ],
       this.fileRemover})
       : clock = clock ?? DateTime.now;
   final Database db;
+  final Duration sessionAccessTtl;
+  final Duration sessionRefreshTtl;
   final String storagePath;
   final String generationProvider;
+  final List<String> enabledGenerationModels;
+  static const generationModelLabels = {
+    'spar3d': 'SPAR3D · Fast',
+    'hunyuan3d_21': 'Hunyuan3D 2.1 · Standard',
+    'trellis2': 'TRELLIS.2 · Quality',
+  };
+  String get defaultGenerationModel => generationProvider == 'modal'
+      ? enabledGenerationModels.firstOrNull ?? 'spar3d'
+      : generationProvider;
+  Json get generationCapabilities => {
+        'provider': generationProvider,
+        'imageTo3d':
+            generationProvider != 'modal' || enabledGenerationModels.isNotEmpty,
+        'textTo3d': generationProvider == 'fake' ||
+            (generationProvider == 'modal' &&
+                enabledGenerationModels.isNotEmpty),
+        'demo': generationProvider == 'fake',
+        'defaultModel': defaultGenerationModel,
+        if (generationProvider == 'modal')
+          'referenceImageProvider': 'qwen_image_21_turbo',
+        'generationModels': [
+          for (final entry in generationModelLabels.entries)
+            {
+              'id': entry.key,
+              'label': entry.value,
+              'available': generationProvider == 'modal' &&
+                  enabledGenerationModels.contains(entry.key)
+            }
+        ],
+      };
+
+  /// Validate before reserving quota or creating a paid remote job.
+  Json validateGenerationOptions(Json input) {
+    final inputType = text(input, 'inputType', fallback: 'image_to_3d');
+    if (!['image_to_3d', 'text_to_3d'].contains(inputType)) {
+      fail(422, 'unsupportedInput', 'Nepodržan tip unosa.');
+    }
+    if (inputType == 'text_to_3d' &&
+        !['fake', 'modal'].contains(generationProvider)) {
+      fail(
+          422, 'unsupportedInput', 'Izaberite referentnu sliku za ovaj model.');
+    }
+    final model =
+        text(input, 'modelProvider', fallback: defaultGenerationModel);
+    if (generationProvider == 'modal' &&
+        (!generationModelLabels.containsKey(model) ||
+            !enabledGenerationModels.contains(model))) {
+      fail(422, 'modelUnavailable', 'Izabrani model trenutno nije dostupan.');
+    }
+    if (generationProvider != 'modal' && model != generationProvider) {
+      fail(422, 'modelUnavailable', 'Izabrani model trenutno nije dostupan.');
+    }
+    final seed = input['seed'] ?? 42;
+    if (seed is! int || seed < 0 || seed > 4294967295) {
+      fail(422, 'invalidSeed', 'Seed mora biti ceo broj od 0 do 4294967295.');
+    }
+    final prompt = input['sourcePrompt'];
+    if (prompt != null && (prompt is! String || prompt.length > 2000)) {
+      fail(422, 'invalidPrompt', 'Opis može imati najviše 2000 znakova.');
+    }
+    if (inputType == 'text_to_3d' &&
+        (prompt == null || (prompt as String).trim().length < 3)) {
+      fail(422, 'promptRequired', 'Unesite opis modela.');
+    }
+    return {'inputType': inputType, 'modelProvider': model, 'seed': seed};
+  }
+
   final Future<void> Function(File file)? fileRemover;
   final DateTime Function() clock;
   DateTime get now => clock().toUtc();
@@ -45,8 +126,20 @@ class HedrionService {
   void validated<T>(Validation<T> result) {
     if (!result.isValid) {
       final error = result.error!;
-      fail(error.code.name.contains('Quota') ? 429 : 422, error.code.name,
-          error.message);
+      final status = switch (error.code) {
+        ErrorCode.unauthenticated || ErrorCode.sessionExpired => 401,
+        ErrorCode.forbidden || ErrorCode.backofficeRoleRequired => 403,
+        ErrorCode.notFound => 404,
+        ErrorCode.revisionConflict => 409,
+        ErrorCode.dailyGenerationQuotaExceeded ||
+        ErrorCode.dailyTransferQuotaExceeded ||
+        ErrorCode.storageQuotaExceeded ||
+        ErrorCode.activeJobLimit =>
+          429,
+        _ => 422,
+      };
+      final dto = errorToDto(error);
+      fail(status, dto.code, error.message, dto.details);
     }
   }
 
@@ -110,55 +203,71 @@ class HedrionService {
     }
     final user = Identity(row['id'] as String, row['role'] as String,
         row['display_name'] as String, row['email'] as String);
+    if (input['browserSessionScope'] == 'backoffice') {
+      validated(validateBackofficeAccess(user.actor));
+    }
     return db.transaction((tx) => _session(tx, user));
   }
 
-  Future<Json> _session(Tx tx, Identity user) async {
+  Future<Json> _session(Tx tx, Identity user,
+      {DateTime? refreshDeadline}) async {
     final token = randomToken(), refresh = randomToken();
+    final refreshExpiresAt = refreshDeadline ?? now.add(sessionRefreshTtl);
+    final requestedAccessExpiry = now.add(sessionAccessTtl);
+    final accessExpiresAt = requestedAccessExpiry.isBefore(refreshExpiresAt)
+        ? requestedAccessExpiry
+        : refreshExpiresAt;
     await tx.query(
         'INSERT INTO sessions(token_hash,refresh_hash,user_id,expires_at,refresh_expires_at) VALUES(@token,@refresh,@user,@expires,@refreshExpires)',
         {
           'token': digest(token),
           'refresh': digest(refresh),
           'user': user.id,
-          'expires': now.add(const Duration(hours: 1)),
-          'refreshExpires': now.add(const Duration(days: 30))
+          'expires': accessExpiresAt,
+          'refreshExpires': refreshExpiresAt
         });
     return {
       'token': token,
       'refreshToken': refresh,
-      'expiresAt': now.add(const Duration(hours: 1)).toIso8601String(),
+      'expiresAt': accessExpiresAt.toIso8601String(),
+      'refreshExpiresAt': refreshExpiresAt.toIso8601String(),
       'user': user.toJson()
     };
   }
 
   Future<Json> refresh(Json input) => db.transaction((tx) async {
         final row = await tx.one(
-            'SELECT u.*,s.token_hash FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.refresh_hash=@hash AND s.revoked_at IS NULL AND s.refresh_expires_at>@now AND u.disabled_at IS NULL',
+            'SELECT u.*,s.token_hash,s.refresh_expires_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.refresh_hash=@hash AND s.revoked_at IS NULL AND s.refresh_expires_at>@now AND u.disabled_at IS NULL',
             {'hash': digest(text(input, 'refreshToken')), 'now': now});
         if (row == null) fail(401, 'invalidRefresh', 'Sesija je istekla.');
+        final identity = Identity(row['id'] as String, row['role'] as String,
+            row['display_name'] as String, row['email'] as String);
+        if (input['browserSessionScope'] == 'backoffice') {
+          validated(validateBackofficeAccess(identity.actor));
+        }
         await tx.query(
             'UPDATE sessions SET revoked_at=@now WHERE token_hash=@hash',
             {'now': now, 'hash': row['token_hash']});
-        return _session(
-            tx,
-            Identity(row['id'] as String, row['role'] as String,
-                row['display_name'] as String, row['email'] as String));
+        return _session(tx, identity,
+            refreshDeadline: row['refresh_expires_at'] as DateTime);
       });
-  Future<void> logout(String token) => db.transaction((tx) async {
+  Future<void> logout(String? token, {String? refreshToken}) =>
+      db.transaction((tx) async {
         await tx.query(
-            'UPDATE sessions SET revoked_at=@now WHERE token_hash=@hash',
-            {'now': now, 'hash': digest(token)});
+            'UPDATE sessions SET revoked_at=@now WHERE token_hash=@hash OR refresh_hash=@refresh',
+            {
+              'now': now,
+              'hash': token == null ? null : digest(token),
+              'refresh': refreshToken == null ? null : digest(refreshToken)
+            });
       });
   Future<Asset> owned(Tx tx, Identity user, String id) async {
     final row = await tx.one(
         'SELECT data FROM assets WHERE id=@id AND deleted_at IS NULL',
         {'id': id});
     if (row == null) fail(404, 'assetNotFound', 'Model nije pronađen.');
-    final asset = Asset.fromJson(jsonMap(row['data']));
-    if (asset.ownerId.value != user.id) {
-      fail(404, 'assetNotFound', 'Model nije pronađen.');
-    }
+    final asset = assetFromJson(jsonMap(row['data']));
+    validated(validateAssetOwnership(asset, user.actor));
     return asset;
   }
 
@@ -172,7 +281,7 @@ class HedrionService {
         return rows.map((row) => jsonMap(row['data'])).toList();
       });
   Future<Json> getAsset(Identity user, String id) =>
-      db.transaction((tx) async => (await owned(tx, user, id)).toJson());
+      db.transaction((tx) async => assetToJson(await owned(tx, user, id)));
   Future<void> saveAsset(Tx tx, Json asset) async {
     await tx.query(
         'UPDATE assets SET data=@data::jsonb,revision=@revision,updated_at=@updated WHERE id=@id',
@@ -266,7 +375,7 @@ class HedrionService {
         }
         final asset = await owned(tx, user, id);
         _revision(asset.revision, input);
-        final json = asset.toJson();
+        final json = assetToJson(asset);
         _metadata(json, input);
         if (input['projectId'] != null &&
             await tx.one(
@@ -332,17 +441,14 @@ class HedrionService {
                 "SELECT id FROM generation_jobs WHERE owner_id=@owner AND status IN ('queued','running')",
                 {'owner': user.id}) !=
             null) {
-          fail(429, 'activeJobLimit',
-              'Već imate aktivan zahtev. Sačekajte njegov završetak.');
+          fail(
+              429,
+              'activeJobLimit',
+              'Već imate aktivan zahtev. Sačekajte njegov završetak.',
+              {'limit': 1, 'current': 1, 'requested': 1});
         }
-        final inputType = text(input, 'inputType', fallback: 'image_to_3d');
-        if (inputType == 'text_to_3d' && generationProvider != 'fake') {
-          fail(422, 'unsupportedInput',
-              'Tekstualni tok zahteva zaseban potvrđen text-to-image provider. Izaberite referentnu sliku.');
-        }
-        if (inputType != 'image_to_3d' && inputType != 'text_to_3d') {
-          fail(422, 'unsupportedInput', 'Nepodržan tip unosa.');
-        }
+        final options = validateGenerationOptions(input);
+        final inputType = options['inputType'];
         final source = await tx.one(
             "SELECT id FROM stored_files WHERE asset_id=@id AND kind='source' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
             {'id': id});
@@ -382,7 +488,9 @@ class HedrionService {
           'sourcePrompt': input['sourcePrompt'],
           'status': 'queued',
           'acceptedAt': now.toIso8601String(),
-          'provider': 'fake',
+          'provider': options['modelProvider'],
+          'modelProvider': options['modelProvider'],
+          'seed': options['seed'],
           'retryCount': 0
         };
         await tx.query(
@@ -395,7 +503,7 @@ class HedrionService {
               'data': jsonEncode(job),
               'key': key
             });
-        final json = asset.toJson()
+        final json = assetToJson(asset)
           ..['lifecycle'] = 'queued'
           ..['revision'] = asset.revision + 1
           ..['updatedAt'] = now.toIso8601String();
@@ -419,25 +527,31 @@ class HedrionService {
             {'asset': assetId, 'owner': user.id});
         return rows.map(_jobJson).toList();
       });
-  Json _jobJson(Json row) => jsonMap(row['data'])
-    ..['status'] = row['status']
-    ..['failureCode'] = row['failure_code']
-    ..['startedAt'] =
-        (row['started_at'] as DateTime?)?.toUtc().toIso8601String()
-    ..['finishedAt'] =
-        (row['finished_at'] as DateTime?)?.toUtc().toIso8601String()
-    ..['failureMessage'] = row['failure_code'] == null
-        ? null
-        : switch (row['failure_code']) {
-            'storageQuotaExceeded' =>
-              'Rezultat nije sačuvan jer je zajedničko skladište popunjeno.',
-            'workerLeaseExpired' =>
-              'Worker nije potvrdio da je obrada i dalje aktivna.',
-            'workerUnavailable' => 'Worker trenutno nije dostupan.',
-            'invalidWorkerOutput' =>
-              'Worker nije vratio ispravan GLB rezultat.',
-            _ => 'Obrada nije uspela. Možete pokrenuti novi pokušaj.'
-          };
+  Json _jobJson(Json row) => GenerationJobDto.fromJson(jsonMap(row['data'])
+        ..['status'] = row['status']
+        ..['failureCode'] = row['failure_code']
+        ..['startedAt'] =
+            (row['started_at'] as DateTime?)?.toUtc().toIso8601String()
+        ..['finishedAt'] =
+            (row['finished_at'] as DateTime?)?.toUtc().toIso8601String()
+        ..['failureMessage'] = row['failure_code'] == null
+            ? null
+            : switch (row['failure_code']) {
+                'storageQuotaExceeded' =>
+                  'Rezultat nije sačuvan jer je zajedničko skladište popunjeno.',
+                'workerLeaseExpired' =>
+                  'Worker nije potvrdio da je obrada i dalje aktivna.',
+                'workerUnavailable' => 'Worker trenutno nije dostupan.',
+                'workerTimeout' =>
+                  'Generisanje je trajalo predugo. Pokušajte ponovo kasnije.',
+                'modelAccessRequired' =>
+                  'Pristup izabranom modelu još nije podešen na serveru.',
+                'modelUnavailable' => 'Izabrani model trenutno nije dostupan.',
+                'invalidWorkerOutput' =>
+                  'Worker nije vratio ispravan GLB rezultat.',
+                _ => 'Obrada nije uspela. Možete pokrenuti novi pokušaj.'
+              })
+      .toJson();
   Future<Json> cancel(Identity user, String id) => db.transaction((tx) async {
         final row = await tx.one(
             'SELECT * FROM generation_jobs WHERE id=@id AND owner_id=@owner',
@@ -451,7 +565,7 @@ class HedrionService {
             "UPDATE generation_jobs SET status='cancelled',finished_at=@now WHERE id=@id",
             {'id': id, 'now': now});
         final asset = await owned(tx, user, row['asset_id'] as String);
-        final json = asset.toJson()
+        final json = assetToJson(asset)
           ..['lifecycle'] = 'failed'
           ..['revision'] = asset.revision + 1
           ..['updatedAt'] = now.toIso8601String();
@@ -467,20 +581,21 @@ class HedrionService {
         _revision(asset.revision, input);
         validated(validateTransition(
             asset, AssetLifecycle.pendingReview, user.actor));
-        if (input['confirmRights'] != true) {
-          fail(422, 'rightsRequired',
-              'Potvrdite prava na ulaznu sliku i model.');
-        }
         final license = text(input, 'license', fallback: 'ccBy');
-        if (!['ccBy', 'cc0', 'allRightsReserved'].contains(license)) {
-          fail(422, 'invalidLicense', 'Izaberite podržanu licencu.');
+        if (!AssetLicense.values.any((value) => value.name == license)) {
+          fail(
+              422, ErrorCode.invalidInput.name, 'Izaberite podržanu licencu.', {
+            'rule': 'publicationLicense',
+            'allowedLicenses':
+                AssetLicense.values.map((value) => value.name).toList()
+          });
         }
         final allowDownload = input['allowDownload'] == true;
-        if (allowDownload && license == 'allRightsReserved') {
-          fail(422, 'licenseDownloadDenied',
-              'Za preuzimanje izaberite CC BY ili CC0 licencu.');
-        }
-        final snapshot = asset.toJson()
+        validated(validatePublicationLicense(
+            AssetLicense.values.byName(license),
+            allowDownload: allowDownload,
+            confirmRights: input['confirmRights'] == true));
+        final snapshot = assetToJson(asset)
           ..['license'] = license
           ..['allowDownload'] = allowDownload;
         final submissionId = newId();
@@ -495,7 +610,7 @@ class HedrionService {
               'snapshot': jsonEncode(snapshot),
               'slug': slug
             });
-        final json = asset.toJson()
+        final json = assetToJson(asset)
           ..['lifecycle'] = 'pendingReview'
           ..['revision'] = asset.revision + 1
           ..['updatedAt'] = now.toIso8601String();
@@ -514,9 +629,7 @@ class HedrionService {
         return result;
       });
   void requireModerator(Identity user) {
-    if (!['moderator', 'admin'].contains(user.role)) {
-      fail(403, 'moderatorRequired', 'Ovu radnju može da izvrši moderator.');
-    }
+    validated(validateModerationAccess(user.actor));
   }
 
   static const _submissionSelect = '''SELECT s.*,a.data AS asset_data,
@@ -596,7 +709,7 @@ class HedrionService {
         if (row == null) fail(404, 'notFound', 'Prijava nije pronađena.');
         return _submissionJson(row);
       });
-  Json _submissionJson(Json row) => {
+  Json _submissionJson(Json row) => PublicationSubmissionDto.fromJson({
         'id': row['id'],
         'assetId': row['asset_id'],
         'status': row['status'],
@@ -611,7 +724,7 @@ class HedrionService {
         'audit': row['audit'] ?? [],
         'rejectionReason': row['rejection_reason'],
         'snapshot': jsonMap(row['snapshot'])
-      };
+      }).toJson();
   Future<Json> moderate(
           Identity user, String id, bool approve, Json input, String key) =>
       db.transaction((tx) async {
@@ -636,17 +749,13 @@ class HedrionService {
             'SELECT data FROM assets WHERE id=@id AND deleted_at IS NULL',
             {'id': row['asset_id']});
         if (assetRow == null) fail(404, 'assetNotFound', 'Model je obrisan.');
-        final asset = Asset.fromJson(jsonMap(assetRow['data']));
+        final asset = assetFromJson(jsonMap(assetRow['data']));
         final reason = text(input, 'reason', fallback: '').trim();
         validated(validateTransition(
             asset,
             approve ? AssetLifecycle.published : AssetLifecycle.rejected,
             user.actor,
             reason: reason));
-        if (!approve && (reason.length < 3 || reason.length > 1000)) {
-          fail(
-              422, 'reasonRequired', 'Razlog mora imati od 3 do 1000 znakova.');
-        }
         final status = approve ? 'approved' : 'rejected';
         await tx.query(
             'UPDATE publication_submissions SET status=@status,revision=revision+1,reviewed_at=@now,reviewed_by=@reviewer,rejection_reason=@reason WHERE id=@id',
@@ -666,7 +775,7 @@ class HedrionService {
               'action': status,
               'reason': approve ? null : reason
             });
-        final json = asset.toJson()
+        final json = assetToJson(asset)
           ..['lifecycle'] = approve ? 'published' : 'rejected'
           ..['rejectionReason'] = approve ? null : reason
           ..['revision'] = asset.revision + 1
@@ -701,7 +810,7 @@ class HedrionService {
               'id': id
             });
         final asset = await owned(tx, user, row['asset_id'] as String);
-        final json = asset.toJson()
+        final json = assetToJson(asset)
           ..['lifecycle'] = 'ready'
           ..['revision'] = asset.revision + 1
           ..['updatedAt'] = now.toIso8601String();
@@ -722,7 +831,7 @@ class HedrionService {
               "UPDATE publication_submissions SET status=CASE WHEN status='approved' THEN 'unpublished' ELSE 'withdrawn' END,revision=revision+1 WHERE asset_id=@asset AND status IN ('approved','pending_review')",
               {'asset': id});
         }
-        final data = asset.toJson()
+        final data = assetToJson(asset)
           ..['lifecycle'] = 'ready'
           ..['revision'] = asset.revision + 1
           ..['updatedAt'] = now.toIso8601String();
@@ -1003,7 +1112,7 @@ class HedrionService {
         }
         final stored =
             await persistFile(tx, user.id, id, 'source', bytes, mime);
-        final json = asset.toJson()
+        final json = assetToJson(asset)
           ..['sourceImageFileId'] = stored['id']
           ..['revision'] = asset.revision + 1
           ..['updatedAt'] = now.toIso8601String();
@@ -1086,7 +1195,7 @@ class HedrionService {
               {'id': id});
           if (row != null && row['owner_id'] != user?.id) {
             if (user == null ||
-                !['moderator', 'admin'].contains(user.role) ||
+                !canModerate(user.actor.role) ||
                 await tx.one(
                         "SELECT id FROM publication_submissions WHERE asset_id=@asset AND (snapshot->>'outputFileId'=@file OR snapshot->>'previewFileId'=@file)",
                         {'asset': row['asset_id'], 'file': row['id']}) ==
@@ -1100,12 +1209,12 @@ class HedrionService {
       });
   Future<Json> deleteAsset(Identity user, String id, Json input) async {
     await db.transaction((tx) async {
-      final row = await tx.one(
-          'SELECT data,deleted_at FROM assets WHERE id=@id AND owner_id=@owner',
-          {'id': id, 'owner': user.id});
+      final row = await tx
+          .one('SELECT data,deleted_at FROM assets WHERE id=@id', {'id': id});
       if (row == null) fail(404, 'assetNotFound', 'Model nije pronađen.');
+      final asset = assetFromJson(jsonMap(row['data']));
+      validated(validateAssetOwnership(asset, user.actor));
       if (row['deleted_at'] != null) return;
-      final asset = Asset.fromJson(jsonMap(row['data']));
       _revision(asset.revision, input);
       if (await tx.one(
               "SELECT id FROM generation_jobs WHERE asset_id=@id AND status IN ('queued','running')",
