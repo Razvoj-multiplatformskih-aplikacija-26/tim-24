@@ -37,8 +37,8 @@ class HttpStudioWorkflows implements StudioWorkflows {
   void demonstrate(String command) =>
       throw const DomainException(DomainError(ErrorCode.invalidInput));
   @override
-  Future<Map<String, dynamic>> capabilities() =>
-      client.request('GET', '/api/v1/capabilities');
+  Future<Map<String, dynamic>> capabilities() async =>
+      (await client.generationCapabilities()).toJson();
   @override
   Future<List<Map<String, dynamic>>> loadProjects() async {
     return (await client.projects())
@@ -85,24 +85,24 @@ class HttpStudioWorkflows implements StudioWorkflows {
     String? modelProvider,
     int seed = 42,
   }) async {
-    final config = await capabilities();
+    final config = await client.generationCapabilities();
     await client.generate(
       asset.id,
       baseRevision: asset.revision,
       idempotencyKey: idempotencyKey,
       inputType: inputType,
       sourcePrompt: sourcePrompt,
-      modelProvider: config['demo'] == true ? null : modelProvider,
+      modelProvider: config.demo ? null : modelProvider,
       seed: seed,
     );
   }
 
   @override
-  Future<Map<String, dynamic>> generationHistory(AssetId id) =>
-      client.request('GET', '/api/v1/assets/${id.value}/generations');
+  Future<Map<String, dynamic>> generationHistory(AssetId id) async =>
+      (await client.generationHistory(id)).toJson();
   @override
   Future<void> cancelGeneration(String id) async {
-    await client.request('POST', '/api/v1/generations/$id/cancel');
+    await client.cancelGeneration(id);
   }
 
   @override

@@ -129,11 +129,13 @@ void main() {
                   'jobs': [
                     // A newer job for a different result must not control this GLB.
                     {
+                      'id': 'newer-job',
                       'status': 'succeeded',
                       'outputFileId': 'other-output',
                       'provider': 'hunyuan3d_21',
                     },
                     {
+                      'id': 'matching-job',
                       'status': 'succeeded',
                       'outputFileId': 'model-1',
                       'provider': 'spar3d',

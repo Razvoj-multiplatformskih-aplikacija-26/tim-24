@@ -55,27 +55,28 @@ class HedrionService {
   String get defaultGenerationModel => generationProvider == 'modal'
       ? enabledGenerationModels.firstOrNull ?? 'spar3d'
       : generationProvider;
-  Json get generationCapabilities => {
-        'provider': generationProvider,
-        'imageTo3d':
+  GenerationCapabilitiesDto get generationCapabilities =>
+      GenerationCapabilitiesDto(
+        provider: generationProvider,
+        imageTo3d:
             generationProvider != 'modal' || enabledGenerationModels.isNotEmpty,
-        'textTo3d': generationProvider == 'fake' ||
+        textTo3d: generationProvider == 'fake' ||
             (generationProvider == 'modal' &&
                 enabledGenerationModels.isNotEmpty),
-        'demo': generationProvider == 'fake',
-        'defaultModel': defaultGenerationModel,
-        if (generationProvider == 'modal')
-          'referenceImageProvider': 'qwen_image_21_turbo',
-        'generationModels': [
+        demo: generationProvider == 'fake',
+        defaultModel: defaultGenerationModel,
+        referenceImageProvider:
+            generationProvider == 'modal' ? 'qwen_image_21_turbo' : null,
+        generationModels: [
           for (final entry in generationModelLabels.entries)
-            {
-              'id': entry.key,
-              'label': entry.value,
-              'available': generationProvider == 'modal' &&
-                  enabledGenerationModels.contains(entry.key)
-            }
+            GenerationModelDto(
+              id: entry.key,
+              label: entry.value,
+              available: generationProvider == 'modal' &&
+                  enabledGenerationModels.contains(entry.key),
+            )
         ],
-      };
+      );
 
   /// Validate before reserving quota or creating a paid remote job.
   Json validateGenerationOptions(Json input) {
@@ -679,26 +680,29 @@ class HedrionService {
             "SELECT count(*) AS count FROM generation_jobs WHERE status='running' AND (@mine=false OR owner_id=@owner)",
             {'mine': mine, 'owner': user.id}))!['count'] as int;
         final reviewed = counts['reviewed_total'] as int;
-        return {
-          'assets': page.map((row) {
-            final data = jsonMap(row['snapshot']);
-            final current = jsonMap(row['asset_data']);
-            data['lifecycle'] = current['lifecycle'];
-            data['revision'] = current['revision'];
-            data['rejectionReason'] = row['rejection_reason'];
-            data['submissionId'] = row['id'];
-            return data;
-          }).toList(),
-          'submissions': page.map(_submissionJson).toList(),
-          'nextCursor': rows.length > pageSize ? page.last['asset_id'] : null,
-          'stats': {
-            'reviewedToday': counts['reviewed_today'],
-            'approvalRate': reviewed == 0
+        return ModerationPageDto(
+          page: AssetPageDto(
+            assets: page.map((row) {
+              final data = jsonMap(row['snapshot']);
+              final current = jsonMap(row['asset_data']);
+              return AssetDto.fromJson(data
+                ..['lifecycle'] = current['lifecycle']
+                ..['revision'] = current['revision']
+                ..['rejectionReason'] = row['rejection_reason']
+                ..['submissionId'] = row['id']);
+            }).toList(),
+            nextCursor:
+                rows.length > pageSize ? page.last['asset_id'] as String : null,
+          ),
+          submissions: page.map(_submissionDto),
+          stats: ModerationStatsDto(
+            reviewedToday: counts['reviewed_today'] as int,
+            approvalRate: reviewed == 0
                 ? 0.0
                 : (counts['approved_total'] as int) / reviewed,
-            'activeJobs': activeJobs,
-          }
-        };
+            activeJobs: activeJobs,
+          ),
+        ).toJson();
       });
   Future<Json> moderationSubmission(Identity user, String id) =>
       db.transaction((tx) async {
@@ -707,9 +711,10 @@ class HedrionService {
             '$_submissionSelect WHERE s.id=@id AND a.deleted_at IS NULL',
             {'id': id});
         if (row == null) fail(404, 'notFound', 'Prijava nije pronađena.');
-        return _submissionJson(row);
+        return _submissionDto(row).toJson();
       });
-  Json _submissionJson(Json row) => PublicationSubmissionDto.fromJson({
+  PublicationSubmissionDto _submissionDto(Json row) =>
+      PublicationSubmissionDto.fromJson({
         'id': row['id'],
         'assetId': row['asset_id'],
         'status': row['status'],
@@ -724,7 +729,7 @@ class HedrionService {
         'audit': row['audit'] ?? [],
         'rejectionReason': row['rejection_reason'],
         'snapshot': jsonMap(row['snapshot'])
-      }).toJson();
+      });
   Future<Json> moderate(
           Identity user, String id, bool approve, Json input, String key) =>
       db.transaction((tx) async {

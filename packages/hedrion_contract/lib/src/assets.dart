@@ -19,11 +19,13 @@ final class AssetDto {
     this.outputFileId,
     this.previewFileId,
     this.rejectionReason,
+    this.submissionId,
     this.allowDownload = false,
     this.license = 'ccBy',
   }) : tags = List.unmodifiable(tags);
   final String id, ownerId, title, lifecycle, description, category, license;
   final String? projectId, outputFileId, previewFileId, rejectionReason;
+  final String? submissionId;
   final DateTime createdAt, updatedAt;
   final List<String> tags;
   final bool favorite, allowDownload;
@@ -44,6 +46,7 @@ final class AssetDto {
     outputFileId: optionalString(json, 'outputFileId'),
     previewFileId: optionalString(json, 'previewFileId'),
     rejectionReason: optionalString(json, 'rejectionReason'),
+    submissionId: optionalString(json, 'submissionId'),
     allowDownload: boolean(json, 'allowDownload'),
     license: string(json, 'license', fallback: 'ccBy'),
   );
@@ -63,6 +66,7 @@ final class AssetDto {
     'outputFileId': outputFileId,
     'previewFileId': previewFileId,
     'rejectionReason': rejectionReason,
+    if (submissionId != null) 'submissionId': submissionId,
     'allowDownload': allowDownload,
     'license': license,
   };

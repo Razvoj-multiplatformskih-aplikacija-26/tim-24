@@ -227,7 +227,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         ? setup.imageName ?? ''
         : setup.prompt.split('\n').first;
     final draftTitle = title.text.trim().isEmpty
-        ? String.fromCharCodes(suggestedTitle.runes.take(60))
+        ? String.fromCharCodes(suggestedTitle.runes.take(titleMaxLength))
         : title.text;
     final draftCategory = category;
     final draftTags = parseTags(tags.text);
@@ -314,6 +314,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         context.go('/assets/${asset.id.value}');
       }
     } on DomainException catch (e) {
+      if (asset == null &&
+          !bloc.isClosed &&
+          e.error.code == ErrorCode.revisionConflict) {
+        bloc.add(const LoadAssets());
+      }
       if (mounted) setState(() => error = errorMessage(e.error));
     } catch (_) {
       if (mounted) {

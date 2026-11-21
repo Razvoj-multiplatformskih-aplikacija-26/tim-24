@@ -108,6 +108,51 @@ void main() {
     expect(page.nextCursor, cursor);
   });
 
+  test(
+    'project, capabilities and history preserve the existing wire shape',
+    () {
+      final projects = {
+        'projects': [
+          {'id': 'demo', 'ownerId': 'creator', 'name': 'Demo', 'revision': 2},
+        ],
+      };
+      expect(ProjectListDto.fromJson(projects).toJson(), projects);
+      expect(const ProjectWriteDto(name: 'Nova').toJson(), {'name': 'Nova'});
+
+      final capabilities = {
+        'provider': 'modal',
+        'demo': false,
+        'imageTo3d': true,
+        'textTo3d': true,
+        'defaultModel': 'spar3d',
+        'referenceImageProvider': 'qwen_image_21_turbo',
+        'generationModels': [
+          {'id': 'spar3d', 'label': 'SPAR3D', 'available': true},
+        ],
+      };
+      expect(
+        GenerationCapabilitiesDto.fromJson(capabilities).toJson(),
+        capabilities,
+      );
+
+      final history = {
+        'jobs': [
+          {
+            'id': 'job',
+            'assetId': 'asset',
+            'ownerId': 'creator',
+            'status': 'succeeded',
+            'inputType': 'text_to_3d',
+            'outputFileId': 'output',
+            'metrics': {'gpu_type': 'L4', 'inference_ms': 2134},
+            'referenceImageMetrics': {'inference_ms': 221},
+          },
+        ],
+      };
+      expect(GenerationHistoryDto.fromJson(history).toJson(), history);
+    },
+  );
+
   test('sync retains a legacy operation ID and the flattened error data', () {
     final operation = SyncAssetOperationDto.fromJson({
       'id': 'legacy-edit',

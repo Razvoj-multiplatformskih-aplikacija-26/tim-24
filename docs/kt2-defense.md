@@ -49,6 +49,14 @@ Primer je naziv od 45 znakova posle serverskog smanjenja maksimuma na 40:
 
 Pre izmene izgraditi i sačuvati klijenta sa postojećom granicom 60; tokom probe ga ne rebuildovati/hot-reloadovati. Mobilni APK ili statički release web build je pogodan.
 
+Debug APK u API režimu izgraditi ovom komandom iz `apps/mobile`.
+
+```powershell
+flutter build apk --debug --dart-define=HEDRION_MODE=api --dart-define=HEDRION_API_URL=http://10.0.2.2:8080
+```
+
+Sačuvati `build/app/outputs/flutter-apk/app-debug.apk` pre izmene servera. Ako demo API koristi drugi port, ugraditi taj port pri izradi APK-a i zadržati ga pri oba pokretanja servera. Isti test može da se pokaže kroz **Projekti → Nova kolekcija**, jer naziv kolekcije koristi isto zajedničko pravilo kao naziv modela.
+
 1. U `packages/domain/lib/src/rules.dart` promeniti samo `titleMaxLength = 60` u `titleMaxLength = 40`.
 2. Pokrenuti relevantne domain testove i prilagoditi očekivanu granicu ako nastavnik traži trajnu izmenu. Za proveru starih klijenata ne menjati mapper niti tekst poruke ručno.
 3. Ponovo izgraditi samo server: `docker compose up --build -d server`.

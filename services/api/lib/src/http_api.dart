@@ -165,7 +165,7 @@ class HttpApi {
 
   void _routes() {
     router.get('/api/v1/capabilities',
-        (_) => response(200, service.generationCapabilities));
+        (_) => response(200, service.generationCapabilities.toJson()));
     router.get(
         '/health',
         (_) => response(200, {
@@ -270,14 +270,19 @@ class HttpApi {
         throw const ApiFailure(
             422, 'imageSize', 'Slika može imati najviše 10 MB.');
       }
-      return response(200, {
-        'url': '/api/v1/assets/$id/source',
-        'method': 'PUT',
-        'maxBytes': HedrionService.maxUploadBytes,
-        'headers': {'Content-Type': input['mime'], 'X-File-Length': '$length'},
-        'note':
-            'Quota is atomically reserved when the transfer starts; this URL grants no bypass.'
-      });
+      final mime = input['mime'];
+      if (mime != null && mime is! String) {
+        throw const ApiFailure(
+            422, 'invalidField', 'Polje mime mora biti tekst.');
+      }
+      return response(
+          200,
+          UploadOfferDto(
+            url: '/api/v1/assets/$id/source',
+            maxBytes: HedrionService.maxUploadBytes,
+            byteLength: length,
+            mime: mime as String?,
+          ).toJson());
     });
     router.put('/api/v1/assets/:id/source', _upload);
     router.get('/api/v1/assets/:id/download-url', (Request r) async {
@@ -289,11 +294,13 @@ class HttpApi {
         throw const ApiFailure(404, 'missingOutput', 'Model nema rezultat.');
       }
       final info = await service.fileInfo(identity, fileId as String);
-      return response(200, {
-        'url': '/api/v1/files/$fileId',
-        'byteLength': info['byte_length'],
-        'mime': info['mime']
-      });
+      return response(
+          200,
+          DownloadLinkDto(
+            url: '/api/v1/files/$fileId',
+            byteLength: info['byte_length'] as int,
+            mime: info['mime'] as String,
+          ).toJson());
     });
     router.get('/api/v1/files/:id', (Request r) async {
       final id = r.pathParameters.raw[#id]!;
@@ -301,14 +308,15 @@ class HttpApi {
     });
     router.post('/api/v1/assets/:id/generations', (Request r) async {
       final id = r.pathParameters.raw[#id]!;
-      return response(
-          202,
-          await service.generate(await user(r), id,
-              GenerationRequestDto.fromJson(await body(r)).toJson(), key(r)));
+      final generation = await service.generate(await user(r), id,
+          GenerationRequestDto.fromJson(await body(r)).toJson(), key(r));
+      return response(202, GenerationResponseDto.fromJson(generation).toJson());
     });
     router.get('/api/v1/assets/:id/generations', (Request r) async {
       final id = r.pathParameters.raw[#id]!;
-      return response(200, {'jobs': await service.jobs(await user(r), id)});
+      final jobs = await service.jobs(await user(r), id);
+      return response(200,
+          GenerationHistoryDto(jobs.map(GenerationJobDto.fromJson)).toJson());
     });
     router.get('/api/v1/generations/:id', (Request r) async {
       final id = r.pathParameters.raw[#id]!;
@@ -316,7 +324,9 @@ class HttpApi {
     });
     router.post('/api/v1/generations/:id/cancel', (Request r) async {
       final id = r.pathParameters.raw[#id]!;
-      return response(200, await service.cancel(await user(r), id));
+      final cancelled = await service.cancel(await user(r), id);
+      return response(
+          200, GenerationCancellationDto.fromJson(cancelled).toJson());
     });
     router.post('/api/v1/generations/:id/retry', (Request r) async {
       final id = r.pathParameters.raw[#id]!;
@@ -604,7 +614,7 @@ class HttpApi {
         await service.saveAsset(tx, data);
         return {'asset': data, 'file': file};
       });
-      return response(201, result);
+      return response(201, UploadResultDto.fromJson(result).toJson());
     } finally {
       await service.finishTransfer(reservation, charged);
     }

@@ -601,7 +601,7 @@ class AssetDetailScreen extends StatelessWidget {
                 TextFormField(
                   controller: title,
                   decoration: const InputDecoration(labelText: 'Naziv'),
-                  maxLength: 60,
+                  maxLength: titleMaxLength,
                   validator: (value) {
                     final r = validateTitle(value ?? '');
                     return r.isValid ? null : errorMessage(r.error!);

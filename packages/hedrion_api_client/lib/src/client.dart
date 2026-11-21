@@ -313,7 +313,7 @@ final class HedrionApiClient {
         }
         throw DomainException(_error(response.statusCode, json));
       }
-      return assetFromResponse(json);
+      return assetFromDto(UploadResultDto.fromJson(json).asset);
     } on DomainException {
       rethrow;
     } catch (_) {
@@ -342,6 +342,22 @@ final class HedrionApiClient {
     revision: baseRevision,
     key: idempotencyKey,
   ).then((json) => GenerationResponseDto.fromJson(json).toJson());
+
+  Future<GenerationCapabilitiesDto> generationCapabilities() async =>
+      GenerationCapabilitiesDto.fromJson(
+        await request('GET', '/api/v1/capabilities'),
+      );
+
+  Future<GenerationHistoryDto> generationHistory(AssetId id) async =>
+      GenerationHistoryDto.fromJson(
+        await request('GET', '/api/v1/assets/${id.value}/generations'),
+      );
+
+  Future<GenerationCancellationDto> cancelGeneration(String id) async =>
+      GenerationCancellationDto.fromJson(
+        await request('POST', '/api/v1/generations/$id/cancel'),
+      );
+
   Future<List<ProjectDto>> projects() async => ProjectListDto.fromJson(
     await request('GET', '/api/v1/projects'),
   ).projects;
@@ -363,11 +379,10 @@ final class HedrionApiClient {
   );
 
   Future<Uint8List> download(Asset asset) async {
-    final info = await request(
-      'GET',
-      '/api/v1/assets/${asset.id.value}/download-url',
+    final info = DownloadLinkDto.fromJson(
+      await request('GET', '/api/v1/assets/${asset.id.value}/download-url'),
     );
-    return fileBytes(info['url'] as String);
+    return fileBytes(info.url);
   }
 
   Future<Uint8List> fetchPreview(Asset asset) async {
@@ -531,22 +546,20 @@ final class ApiAssetRepository
             ? path
             : '$path?cursor=${Uri.encodeQueryComponent(cursor)}',
       );
-      final page = AssetPageDto.fromJson(json);
+      final moderationPage = moderator
+          ? ModerationPageDto.fromJson(json)
+          : null;
+      final page = moderationPage?.page ?? AssetPageDto.fromJson(json);
       for (final value in page.assets) {
         final asset = assetFromDto(value);
         assets.putIfAbsent(asset.id.value, () => asset);
       }
-      if (moderator) {
-        if (json['stats'] is Map) {
-          stats = Map<String, dynamic>.from(json['stats'] as Map);
-        }
-        for (final value in json['submissions'] as List<dynamic>? ?? const []) {
-          final submission = PublicationSubmissionDto.fromJson(
-            Map<String, dynamic>.from(value as Map),
-          ).toJson();
+      if (moderationPage != null) {
+        stats = moderationPage.stats?.toJson() ?? stats;
+        for (final submission in moderationPage.submissions) {
           submissions.putIfAbsent(
-            submission['assetId'] as String,
-            () => Map.unmodifiable(submission),
+            submission.assetId,
+            () => Map.unmodifiable(submission.toJson()),
           );
         }
       }

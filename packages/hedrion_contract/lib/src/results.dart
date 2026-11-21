@@ -1,6 +1,71 @@
 import 'assets.dart';
 import 'json.dart';
 
+final class GenerationModelDto {
+  const GenerationModelDto({required this.id, this.label, this.available});
+
+  final String id;
+  final String? label;
+  final bool? available;
+
+  factory GenerationModelDto.fromJson(JsonObject json) => GenerationModelDto(
+    id: string(json, 'id'),
+    label: optionalString(json, 'label'),
+    available: json['available'] == null ? null : boolean(json, 'available'),
+  );
+
+  JsonObject toJson() => {
+    'id': id,
+    if (label != null) 'label': label,
+    if (available != null) 'available': available,
+  };
+}
+
+final class GenerationCapabilitiesDto {
+  GenerationCapabilitiesDto({
+    required this.imageTo3d,
+    required this.textTo3d,
+    required this.demo,
+    this.provider,
+    this.defaultModel,
+    this.referenceImageProvider,
+    Iterable<GenerationModelDto> generationModels = const [],
+  }) : generationModels = List.unmodifiable(generationModels);
+
+  final bool imageTo3d, textTo3d, demo;
+  final String? provider, defaultModel, referenceImageProvider;
+  final List<GenerationModelDto> generationModels;
+
+  factory GenerationCapabilitiesDto.fromJson(JsonObject json) =>
+      GenerationCapabilitiesDto(
+        provider: optionalString(json, 'provider'),
+        defaultModel: optionalString(json, 'defaultModel'),
+        referenceImageProvider: optionalString(json, 'referenceImageProvider'),
+        imageTo3d: boolean(json, 'imageTo3d'),
+        textTo3d: boolean(json, 'textTo3d'),
+        demo: boolean(json, 'demo'),
+        generationModels: json['generationModels'] == null
+            ? const []
+            : objects(
+                json,
+                'generationModels',
+              ).map(GenerationModelDto.fromJson),
+      );
+
+  JsonObject toJson() => {
+    if (provider != null) 'provider': provider,
+    'imageTo3d': imageTo3d,
+    'textTo3d': textTo3d,
+    'demo': demo,
+    if (defaultModel != null) 'defaultModel': defaultModel,
+    if (referenceImageProvider != null)
+      'referenceImageProvider': referenceImageProvider,
+    'generationModels': generationModels
+        .map((model) => model.toJson())
+        .toList(),
+  };
+}
+
 /// Provider-specific timings, GPU names and output metadata remain extensible;
 /// the shared job identity, lifecycle, input and output fields are typed.
 final class GenerationJobDto {
@@ -60,6 +125,40 @@ final class GenerationResponseDto {
     if (job != null) 'job': job!.toJson(),
     if (asset != null) 'asset': asset!.toJson(),
   };
+}
+
+final class GenerationHistoryDto {
+  GenerationHistoryDto(Iterable<GenerationJobDto> jobs)
+    : jobs = List.unmodifiable(jobs);
+
+  final List<GenerationJobDto> jobs;
+
+  factory GenerationHistoryDto.fromJson(JsonObject json) =>
+      GenerationHistoryDto(
+        objects(json, 'jobs').map(GenerationJobDto.fromJson),
+      );
+
+  JsonObject toJson() => {'jobs': jobs.map((job) => job.toJson()).toList()};
+}
+
+final class GenerationCancellationDto {
+  const GenerationCancellationDto({
+    required this.id,
+    required this.status,
+    required this.asset,
+  });
+
+  final String id, status;
+  final AssetDto asset;
+
+  factory GenerationCancellationDto.fromJson(JsonObject json) =>
+      GenerationCancellationDto(
+        id: string(json, 'id'),
+        status: string(json, 'status'),
+        asset: AssetDto.fromJson(object(json['asset'])),
+      );
+
+  JsonObject toJson() => {'id': id, 'status': status, 'asset': asset.toJson()};
 }
 
 final class PublicationSnapshotDto {
@@ -173,5 +272,68 @@ final class PublicationSubmissionDto {
     'rejectionReason': rejectionReason,
     'audit': audit.map((e) => e.toJson()).toList(),
     if (snapshot != null) 'snapshot': snapshot!.toJson(),
+  };
+}
+
+final class ModerationStatsDto {
+  const ModerationStatsDto({
+    this.reviewedToday,
+    this.approvalRate,
+    this.activeJobs,
+  });
+
+  final int? reviewedToday, activeJobs;
+  final num? approvalRate;
+
+  factory ModerationStatsDto.fromJson(JsonObject json) {
+    final rate = json['approvalRate'];
+    if (rate != null && rate is! num) {
+      throw const FormatException('Expected number: approvalRate');
+    }
+    return ModerationStatsDto(
+      reviewedToday: json['reviewedToday'] == null
+          ? null
+          : integer(json, 'reviewedToday'),
+      approvalRate: rate as num?,
+      activeJobs: json['activeJobs'] == null
+          ? null
+          : integer(json, 'activeJobs'),
+    );
+  }
+
+  JsonObject toJson() => {
+    if (reviewedToday != null) 'reviewedToday': reviewedToday,
+    if (approvalRate != null) 'approvalRate': approvalRate,
+    if (activeJobs != null) 'activeJobs': activeJobs,
+  };
+}
+
+final class ModerationPageDto {
+  ModerationPageDto({
+    required this.page,
+    Iterable<PublicationSubmissionDto> submissions = const [],
+    this.stats,
+  }) : submissions = List.unmodifiable(submissions);
+
+  final AssetPageDto page;
+  final List<PublicationSubmissionDto> submissions;
+  final ModerationStatsDto? stats;
+
+  factory ModerationPageDto.fromJson(JsonObject json) => ModerationPageDto(
+    page: AssetPageDto.fromJson(json),
+    submissions: json['submissions'] == null
+        ? const []
+        : objects(json, 'submissions').map(PublicationSubmissionDto.fromJson),
+    stats: json['stats'] == null
+        ? null
+        : ModerationStatsDto.fromJson(object(json['stats'])),
+  );
+
+  JsonObject toJson() => {
+    ...page.toJson(),
+    'submissions': submissions
+        .map((submission) => submission.toJson())
+        .toList(),
+    if (stats != null) 'stats': stats!.toJson(),
   };
 }

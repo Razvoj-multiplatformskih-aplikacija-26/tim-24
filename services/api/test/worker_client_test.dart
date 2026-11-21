@@ -151,10 +151,10 @@ void main() {
     test('advertises configured availability and accepts image and text inputs',
         () {
       expect(service.defaultGenerationModel, 'trellis2');
-      expect(service.generationCapabilities['demo'], false);
-      expect(service.generationCapabilities['textTo3d'], true);
-      final models = service.generationCapabilities['generationModels'] as List;
-      expect(models.first['available'], false);
+      final capabilities = service.generationCapabilities;
+      expect(capabilities.demo, false);
+      expect(capabilities.textTo3d, true);
+      expect(capabilities.generationModels.first.available, false);
       expect(
           service.validateGenerationOptions({})['modelProvider'], 'trellis2');
       expect(
