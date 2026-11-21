@@ -935,35 +935,29 @@ class HedrionService {
         if (row == null) fail(404, 'notFound', 'Model nije pronađen.');
         return _publicJson(row);
       });
-  Future<List<Json>> projects(Identity user) =>
+  Future<List<ProjectDto>> projects(Identity user) =>
       db.transaction((tx) async => (await tx.query(
               'SELECT * FROM projects WHERE owner_id=@owner ORDER BY name',
               {'owner': user.id}))
-          .map((row) => {
-                'id': row['id'],
-                'ownerId': row['owner_id'],
-                'name': row['name'],
-                'revision': row['revision']
-              })
+          .map((row) => ProjectDto(
+                id: row['id'] as String,
+                ownerId: row['owner_id'] as String,
+                name: row['name'] as String,
+                revision: row['revision'] as int,
+              ))
           .toList());
-  Future<Json> project(Identity user, Json input, {String? id}) =>
+  Future<ProjectDto> project(Identity user, ProjectWriteDto input,
+          {String? id}) =>
       db.transaction((tx) async {
-        validated(validateTitle(text(input, 'name')));
+        validated(validateTitle(input.name));
+        final name = input.name.trim();
         if (id == null) {
           final created = newId();
           await tx.query(
               'INSERT INTO projects(id,owner_id,name) VALUES(@id,@owner,@name)',
-              {
-                'id': created,
-                'owner': user.id,
-                'name': text(input, 'name').trim()
-              });
-          return {
-            'id': created,
-            'ownerId': user.id,
-            'name': text(input, 'name').trim(),
-            'revision': 1
-          };
+              {'id': created, 'owner': user.id, 'name': name});
+          return ProjectDto(
+              id: created, ownerId: user.id, name: name, revision: 1);
         }
         final row = await tx.one(
             'SELECT * FROM projects WHERE id=@id AND owner_id=@owner',
@@ -971,16 +965,13 @@ class HedrionService {
         if (row == null) {
           fail(404, 'projectNotFound', 'Projekat nije pronađen.');
         }
-        _revision(row['revision'] as int, input);
+        final revision = row['revision'] as int;
+        _revision(revision, input.toJson());
         await tx.query(
             'UPDATE projects SET name=@name,revision=revision+1 WHERE id=@id',
-            {'name': text(input, 'name').trim(), 'id': id});
-        return {
-          'id': id,
-          'ownerId': user.id,
-          'name': text(input, 'name').trim(),
-          'revision': (row['revision'] as int) + 1
-        };
+            {'name': name, 'id': id});
+        return ProjectDto(
+            id: id, ownerId: user.id, name: name, revision: revision + 1);
       });
   Future<void> _daily(Tx tx) async {
     await tx.query(

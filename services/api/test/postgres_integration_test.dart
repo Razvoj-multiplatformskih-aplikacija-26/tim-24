@@ -1297,6 +1297,86 @@ void main() {
           quota.data['details'], {'limit': 20, 'current': 20, 'requested': 1});
     });
 
+    test('project and offline sync keep the legacy wire and replay semantics',
+        () async {
+      final ownerToken = await sessionFor(a);
+      final otherToken = await sessionFor(b);
+      Future<({int status, Json data})> request(
+          String method, String path, String token,
+          {Json? body, Map<String, String> headers = const {}}) async {
+        final result = await api
+            .handler(makeRequest(method, Uri.parse('http://localhost$path'),
+                headers: {
+                  'authorization': 'Bearer $token',
+                  'content-type': 'application/json',
+                  ...headers,
+                },
+                body: body == null ? null : jsonEncode(body)));
+        return (
+          status: result.statusCode,
+          data: jsonMap(jsonDecode(await result.readAsString()))
+        );
+      }
+
+      final created = await request('POST', '/api/v1/projects', ownerToken,
+          body: {'name': '  Nova kolekcija  '});
+      expect(created.status, 201);
+      final id = created.data['id'];
+      expect(created.data, {
+        'id': id,
+        'ownerId': a.id,
+        'name': 'Nova kolekcija',
+        'revision': 1,
+      });
+      expect((await request('GET', '/api/v1/projects', otherToken)).data,
+          {'projects': []});
+      final edited = await request('PATCH', '/api/v1/projects/$id', ownerToken,
+          body: {'name': 'Preimenovana'}, headers: {'if-match': '"1"'});
+      expect(edited.data['revision'], 2);
+      final stale = await request('PATCH', '/api/v1/projects/$id', ownerToken,
+          body: {'name': 'Zakasnela', 'baseRevision': 1});
+      expect(stale.status, 409);
+      expect(stale.data['details'], {'currentRevision': 2});
+
+      final asset = await draft(a);
+      final assetId = asset['id'] as String;
+      final payload = {'favorite': true, 'title': 'Sačuvana izmena'};
+      const operationId = 'legacy-save-1';
+      final revision = asset['revision'];
+      final saved = await service.updateAsset(
+          a, assetId, {...payload, 'baseRevision': revision},
+          key: operationId);
+      final sync =
+          await request('POST', '/api/v1/sync/operations', ownerToken, body: {
+        'operations': [
+          {
+            'id': operationId,
+            'entityId': assetId,
+            'baseRevision': revision,
+            'payload': payload,
+          },
+          {
+            'clientOperationId': 'stale-save-2',
+            'entityId': assetId,
+            'baseRevision': revision,
+            'payload': {'title': 'Zakasnela izmena'},
+          },
+        ]
+      });
+      expect(sync.status, 200);
+      final results = sync.data['results'] as List;
+      expect(results[0], {
+        'id': operationId,
+        'clientOperationId': operationId,
+        'status': 'applied',
+        'asset': saved,
+      });
+      expect(results[1], containsPair('status', 'conflict'));
+      expect(results[1], containsPair('code', 'revisionConflict'));
+      expect(results[1],
+          containsPair('details', {'currentRevision': saved['revision']}));
+    });
+
     test('raw HTTP denies creator decisions and foreign modifying requests',
         () async {
       final asset = await ready(a);

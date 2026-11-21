@@ -41,9 +41,8 @@ class HttpStudioWorkflows implements StudioWorkflows {
       client.request('GET', '/api/v1/capabilities');
   @override
   Future<List<Map<String, dynamic>>> loadProjects() async {
-    final result = await client.request('GET', '/api/v1/projects');
-    return (result['projects'] as List)
-        .map((value) => Map<String, dynamic>.from(value as Map))
+    return (await client.projects())
+        .map((project) => project.toJson())
         .toList();
   }
 
@@ -52,12 +51,11 @@ class HttpStudioWorkflows implements StudioWorkflows {
     String name, {
     String? id,
     int? baseRevision,
-  }) => client.request(
-    id == null ? 'POST' : 'PATCH',
-    id == null ? '/api/v1/projects' : '/api/v1/projects/$id',
-    revision: baseRevision,
-    body: {'name': name.trim(), if (id != null) 'baseRevision': baseRevision},
-  );
+  }) async => (await client.saveProject(
+    name,
+    id: id,
+    baseRevision: baseRevision,
+  )).toJson();
   @override
   Future<Asset> assignProject(Asset asset, String? projectId) async {
     if (!canModifyCollections) {

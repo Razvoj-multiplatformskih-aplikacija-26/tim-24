@@ -49,7 +49,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
           child: TextFormField(
             autofocus: true,
             controller: name,
-            maxLength: 60,
+            maxLength: titleMaxLength,
             decoration: const InputDecoration(labelText: 'Naziv kolekcije'),
             validator: (value) {
               final r = validateTitle(value ?? '');
@@ -86,6 +86,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
         }
       } on DomainException catch (e) {
         if (mounted) {
+          if (e.error.code == ErrorCode.revisionConflict) refresh();
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text(errorMessage(e.error))));
@@ -119,6 +120,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
       }
     } on DomainException catch (e) {
       if (mounted) {
+        if (e.error.code == ErrorCode.revisionConflict) refresh();
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text(errorMessage(e.error))));

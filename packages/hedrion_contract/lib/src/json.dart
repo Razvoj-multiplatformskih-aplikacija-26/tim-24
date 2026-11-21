@@ -5,6 +5,12 @@ JsonObject object(Object? value) {
   return Map<String, dynamic>.from(value);
 }
 
+Iterable<JsonObject> objects(JsonObject json, String key) {
+  final value = json[key];
+  if (value is! List) throw FormatException('Expected an array: $key');
+  return value.map(object);
+}
+
 String string(JsonObject json, String key, {String? fallback}) {
   final value = json[key];
   if (value == null && fallback != null) return fallback;

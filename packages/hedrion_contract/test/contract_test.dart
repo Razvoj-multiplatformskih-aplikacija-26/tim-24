@@ -107,4 +107,31 @@ void main() {
     expect(request.limit, 12);
     expect(page.nextCursor, cursor);
   });
+
+  test('sync retains a legacy operation ID and the flattened error data', () {
+    final operation = SyncAssetOperationDto.fromJson({
+      'id': 'legacy-edit',
+      'entityId': 'asset',
+      'baseRevision': 7,
+      'payload': {'title': 'Izmena', 'favorite': false, 'projectId': null},
+    });
+    expect(operation.clientOperationId, 'legacy-edit');
+    expect(operation.toAssetPatch().keys.toList(), [
+      'title',
+      'favorite',
+      'projectId',
+      'baseRevision',
+    ]);
+    final conflict = {
+      'id': 'legacy-edit',
+      'clientOperationId': 'legacy-edit',
+      'status': 'conflict',
+      'code': 'revisionConflict',
+      'details': {'currentRevision': 8},
+    };
+    final wire = {
+      'results': [conflict],
+    };
+    expect(SyncResponseDto.fromJson(wire).toJson(), wire);
+  });
 }

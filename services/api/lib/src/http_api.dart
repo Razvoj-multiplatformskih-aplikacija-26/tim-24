@@ -398,18 +398,22 @@ class HttpApi {
               ModerationRequestDto.fromJson(await revisionBody(r)).toJson(),
               key(r)));
     });
-    router.get(
-        '/api/v1/projects',
-        (Request r) async =>
-            response(200, {'projects': await service.projects(await user(r))}));
-    router.post(
-        '/api/v1/projects',
-        (Request r) async =>
-            response(201, await service.project(await user(r), await body(r))));
+    router.get('/api/v1/projects', (Request r) async {
+      final projects = await service.projects(await user(r));
+      return response(200, ProjectListDto(projects).toJson());
+    });
+    router.post('/api/v1/projects', (Request r) async {
+      final identity = await user(r);
+      final project =
+          await service.project(identity, _projectWrite(await body(r)));
+      return response(201, project.toJson());
+    });
     router.patch('/api/v1/projects/:id', (Request r) async {
       final id = r.pathParameters.raw[#id]!;
-      return response(200,
-          await service.project(await user(r), await revisionBody(r), id: id));
+      final identity = await user(r);
+      final project = await service
+          .project(identity, _projectWrite(await revisionBody(r)), id: id);
+      return response(200, project.toJson());
     });
     router.post('/api/v1/sync/operations', (Request r) async {
       final identity = await user(r), input = await body(r);
@@ -418,32 +422,31 @@ class HttpApi {
         throw const ApiFailure(422, 'invalidOperations',
             'Najviše 100 operacija po sinhronizaciji.');
       }
-      final results = <Json>[];
+      final results = <SyncResultDto>[];
       for (final operation in operations) {
-        final op = jsonMap(operation),
-            operationId = op['clientOperationId'] ?? op['id'];
+        final input = jsonMap(operation);
+        final rawId = input['clientOperationId'] ?? input['id'];
+        final operationId = rawId is String ? rawId : null;
         try {
+          text(input, 'entityId');
+          final op = SyncAssetOperationDto.fromJson(input);
           final asset = await service.updateAsset(
-              identity,
-              text(op, 'entityId'),
-              {...jsonMap(op['payload']), 'baseRevision': op['baseRevision']},
-              key: op['idempotencyKey'] as String? ?? operationId as String?);
-          results.add({
-            'id': operationId,
-            'clientOperationId': operationId,
-            'status': 'applied',
-            'asset': asset
-          });
+              identity, op.entityId, op.toAssetPatch(),
+              key: op.idempotencyKey ?? op.clientOperationId);
+          results.add(
+              SyncResultDto.applied(operationId, AssetDto.fromJson(asset)));
         } on ApiFailure catch (error) {
-          results.add({
-            'id': operationId,
-            'clientOperationId': operationId,
-            'status': error.status == 409 ? 'conflict' : 'failed',
-            ...error.toDto().toJson()
-          });
+          results.add(SyncResultDto.rejected(operationId,
+              error.status == 409 ? 'conflict' : 'failed', error.toDto()));
+        } on FormatException {
+          results.add(SyncResultDto.rejected(
+              operationId,
+              'failed',
+              const ApiErrorDto(
+                  code: 'invalidJson', message: 'Neispravna izmena.')));
         }
       }
-      return response(200, {'results': results});
+      return response(200, SyncResponseDto(results).toJson());
     });
     router.get(
         '/api/v1/public/assets',
@@ -480,6 +483,12 @@ class HttpApi {
     router.post('/internal/v1/generations/:id/callback', _callback);
     router.fallback = (_) => response(
         404, {'code': 'notFound', 'message': 'Putanja nije pronađena.'});
+  }
+
+  ProjectWriteDto _projectWrite(Json input) {
+    // Keep the field error used by clients built before the project DTO.
+    text(input, 'name');
+    return ProjectWriteDto.fromJson(input);
   }
 
   void _browserOrigin(Request request, Json input) {

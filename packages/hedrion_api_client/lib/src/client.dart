@@ -342,6 +342,26 @@ final class HedrionApiClient {
     revision: baseRevision,
     key: idempotencyKey,
   ).then((json) => GenerationResponseDto.fromJson(json).toJson());
+  Future<List<ProjectDto>> projects() async => ProjectListDto.fromJson(
+    await request('GET', '/api/v1/projects'),
+  ).projects;
+
+  Future<ProjectDto> saveProject(
+    String name, {
+    String? id,
+    int? baseRevision,
+  }) async => ProjectDto.fromJson(
+    await request(
+      id == null ? 'POST' : 'PATCH',
+      id == null ? '/api/v1/projects' : '/api/v1/projects/$id',
+      revision: baseRevision,
+      body: ProjectWriteDto(
+        name: name.trim(),
+        baseRevision: baseRevision,
+      ).toJson(),
+    ),
+  );
+
   Future<Uint8List> download(Asset asset) async {
     final info = await request(
       'GET',
@@ -459,34 +479,39 @@ final class ApiAssetRepository
     int baseRevision, {
     required String operationId,
   }) async {
-    final json = await client.request(
-      'POST',
-      '/api/v1/sync/operations',
-      key: operationId,
-      body: {
-        'operations': [
-          {
-            'clientOperationId': operationId,
-            'entityId': asset.id.value,
-            'operation': 'updateAsset',
-            'baseRevision': baseRevision,
-            'payload': {
-              'title': asset.title,
-              'description': asset.description,
-              'favorite': asset.favorite,
-            },
-          },
-        ],
-      },
+    final request = SyncRequestDto([
+      SyncAssetOperationDto(
+        clientOperationId: operationId,
+        entityId: asset.id.value,
+        baseRevision: baseRevision,
+        payload: {
+          'title': asset.title,
+          'description': asset.description,
+          'favorite': asset.favorite,
+        },
+      ),
+    ]);
+    final response = SyncResponseDto.fromJson(
+      await client.request(
+        'POST',
+        '/api/v1/sync/operations',
+        key: operationId,
+        body: request.toJson(),
+      ),
     );
-    final result =
-        (json['results'] as List<dynamic>).single as Map<String, dynamic>;
-    if (result['status'] != 'applied') {
+    final result = response.results.singleOrNull;
+    if (result == null ||
+        (result.clientOperationId != null &&
+            result.clientOperationId != operationId)) {
+      throw const DomainException(DomainError(ErrorCode.unavailable));
+    }
+    final error = result.error;
+    if (error != null) {
       throw DomainException(
-        _error(result['status'] == 'conflict' ? 409 : 422, result),
+        errorFromDto(error, status: result.status == 'conflict' ? 409 : 422),
       );
     }
-    return assetFromResponse(result);
+    return assetFromDto(result.asset!);
   }
 
   @override
