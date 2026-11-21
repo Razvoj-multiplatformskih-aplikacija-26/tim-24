@@ -59,6 +59,8 @@ Future<void> runHedrionServer() async {
     service,
     workerUrl: env['WORKER_URL'] ?? 'http://127.0.0.1:8091',
     workerSecret: secret,
+    workerTimeout:
+        Duration(seconds: int.parse(env['WORKER_TIMEOUT_SECONDS'] ?? '2700')),
   );
   final api = HttpApi(
     service,

@@ -6,8 +6,10 @@ import 'package:test/test.dart';
 final class Store implements AssetRepository {
   List<Asset> rows = seedAssets(ownerId: const UserId('owner'));
   bool fail = false;
+  int loadCalls = 0;
   @override
   Future<List<Asset>> loadAssets() async {
+    loadCalls++;
     await Future<void>.delayed(const Duration(milliseconds: 1));
     if (fail) {
       fail = false;
@@ -61,6 +63,17 @@ final class Store implements AssetRepository {
   @override
   Future<void> deleteAsset(AssetId id, int baseRevision) async {
     rows.removeWhere((a) => a.id == id);
+  }
+}
+
+final class RacingStore extends Store {
+  RacingStore({this.rejectReload = false});
+  final bool rejectReload;
+  @override
+  Future<Asset> updateAsset(Asset asset, int baseRevision) async {
+    rows[0] = rows[0].copyWith(title: 'Izmena drugog korisnika', revision: 9);
+    this.fail = rejectReload;
+    throw const DomainException(DomainError(ErrorCode.revisionConflict));
   }
 }
 
@@ -159,4 +172,49 @@ void main() {
       expect(populated(original), isNot(populated(changed)));
     }
   });
+
+  test(
+    'rejected mutation atomically publishes reason and refetched winner',
+    () async {
+      final store = RacingStore();
+      final bloc = AssetBloc(store);
+      final loaded = bloc.stream.firstWhere(
+        (state) => state.status == AssetLoadStatus.ready,
+      );
+      bloc.add(const LoadAssets());
+      await loaded;
+      final stale = bloc.state.assets.first;
+      final rejected = bloc.stream.firstWhere((state) => state.error != null);
+      bloc.add(UpdateAsset(stale, stale.revision));
+      final result = await rejected;
+      expect(store.loadCalls, 2);
+      expect(result.error!.code, ErrorCode.revisionConflict);
+      expect(result.assets.first.title, 'Izmena drugog korisnika');
+      expect(result.assets.first.revision, 9);
+      expect(result.busy, isFalse);
+      await bloc.close();
+    },
+  );
+
+  test(
+    'failed rejection refetch keeps original reason and clears busy',
+    () async {
+      final store = RacingStore(rejectReload: true);
+      final bloc = AssetBloc(store);
+      final loaded = bloc.stream.firstWhere(
+        (state) => state.status == AssetLoadStatus.ready,
+      );
+      bloc.add(const LoadAssets());
+      await loaded;
+      final stale = bloc.state.assets.first;
+      final rejected = bloc.stream.firstWhere((state) => state.error != null);
+      bloc.add(UpdateAsset(stale, stale.revision));
+      final result = await rejected;
+      expect(store.loadCalls, 2);
+      expect(result.error!.code, ErrorCode.revisionConflict);
+      expect(result.assets.first.title, stale.title);
+      expect(result.busy, isFalse);
+      await bloc.close();
+    },
+  );
 }

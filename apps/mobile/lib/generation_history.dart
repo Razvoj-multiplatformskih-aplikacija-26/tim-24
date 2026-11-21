@@ -28,19 +28,18 @@ class _GenerationHistoryState extends State<GenerationHistory> {
   }
 
   void load() {
-    final api = StudioConnection.maybeOf(context)?.client;
-    if (api != null && revision != widget.asset.revision) {
+    final workflows = StudioConnection.maybeOf(context)?.workflows;
+    if (workflows != null &&
+        workflows.supportsHistory &&
+        revision != widget.asset.revision) {
       revision = widget.asset.revision;
-      history = api.request(
-        'GET',
-        '/api/v1/assets/${widget.asset.id.value}/generations',
-      );
+      history = workflows.generationHistory(widget.asset.id);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (StudioConnection.maybeOf(context)?.client == null) {
+    if (StudioConnection.maybeOf(context)?.workflows.supportsHistory != true) {
       return const SizedBox.shrink();
     }
     return FutureBuilder<Map<String, dynamic>>(
@@ -164,9 +163,7 @@ class _GenerationHistoryState extends State<GenerationHistory> {
       return;
     }
     try {
-      await StudioConnection.maybeOf(
-        context,
-      )!.client!.request('POST', '/api/v1/generations/$id/cancel');
+      await StudioConnection.maybeOf(context)!.workflows.cancelGeneration(id);
       if (context.mounted) {
         context.read<AssetBloc>().add(const LoadAssets());
       }
@@ -190,6 +187,11 @@ class _OutputMetadata extends StatelessWidget {
         ),
         metrics = Map<String, dynamic>.from(job['metrics'] as Map? ?? const {});
     final bytes = metrics['output_size_bytes'] as num?;
+    final inferenceMs = metrics['inference_ms'] as num?;
+    final elapsedMs =
+        (metrics['worker_elapsed_ms'] ?? metrics['elapsed_ms']) as num?;
+    final referenceMetrics = job['referenceImageMetrics'] as Map?;
+    final imageMs = referenceMetrics?['inference_ms'] as num?;
     Widget item(String title, String value) => Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -214,6 +216,25 @@ class _OutputMetadata extends StatelessWidget {
               runSpacing: 18,
               children: [
                 item('FORMAT', 'GLB'),
+                if (job['provider'] is String)
+                  item('MODEL', '${job['provider']}'),
+                if (metrics['gpu_type'] is String)
+                  item('GPU', '${metrics['gpu_type']}'),
+                if (inferenceMs != null)
+                  item(
+                    'GENERISANJE',
+                    '${(inferenceMs / 1000).toStringAsFixed(1)} s',
+                  ),
+                if (elapsedMs != null)
+                  item(
+                    'UKUPNO U WORKER-U',
+                    '${(elapsedMs / 1000).toStringAsFixed(1)} s',
+                  ),
+                if (imageMs != null)
+                  item(
+                    'QWEN REFERENCA',
+                    '${(imageMs / 1000).toStringAsFixed(1)} s',
+                  ),
                 if (bytes != null)
                   item(
                     'VELIČINA',
@@ -247,7 +268,7 @@ class _OutputMetadata extends StatelessWidget {
               const Padding(
                 padding: EdgeInsets.only(top: 12),
                 child: Text(
-                  'Pregled prikazuje referentnu sliku. Slika rezultujućeg modela još nije renderovana.',
+                  'Kartica Slika prikazuje referentnu sliku. Za stvarnu geometriju otvori 3D pregled.',
                   style: TextStyle(color: muted, fontSize: 12),
                 ),
               ),

@@ -3,9 +3,7 @@ import 'package:domain/domain.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:hedrion_api_client/hedrion_api_client.dart';
-import 'memory_moderation_repository.dart';
-import 'live_backoffice.dart';
+import 'moderation_workflows_scope.dart';
 import 'studio_theme.dart';
 import 'submission_preview.dart';
 import 'submission_metadata.dart';
@@ -85,6 +83,7 @@ class _ModerationScreenState extends State<ModerationScreen> {
         asset.lifecycle != AssetLifecycle.pendingReview) {
       return;
     }
+    final actor = BackofficeConnection.of(context).workflows.actor;
     final reasonField = GlobalKey<FormFieldState<String>>();
     final reason = await showDialog<String>(
       context: context,
@@ -102,7 +101,7 @@ class _ModerationScreenState extends State<ModerationScreen> {
               final validation = validateTransition(
                 asset,
                 AssetLifecycle.rejected,
-                MemoryModerationRepository.actor,
+                actor,
                 reason: value,
               );
               return validation.isValid
@@ -151,10 +150,14 @@ class _ModerationScreenState extends State<ModerationScreen> {
       }
     },
     builder: (context, state) {
-      final repository = context.read<AssetRepository>();
-      final stats = repository is ApiAssetRepository
-          ? repository.moderationStats
-          : const <String, dynamic>{};
+      final connection = BackofficeConnection.of(context);
+      final workflows = connection.workflows;
+      final stats = workflows.statistics;
+      final roleLabel = switch (workflows.actor.role) {
+        UserRole.creator => 'Kreator',
+        UserRole.moderator => 'Moderator',
+        UserRole.admin => 'Administrator',
+      };
       final records = filtered(state);
       selected ??=
           state.assets
@@ -225,9 +228,9 @@ class _ModerationScreenState extends State<ModerationScreen> {
                   child: Chip(
                     avatar: Icon(Icons.shield_outlined, size: 16),
                     label: Text(
-                      BackofficeConnection.maybeOf(context)?.api == null
-                          ? 'Moderator · KT1'
-                          : 'Moderator',
+                      workflows.supportsSamples
+                          ? '$roleLabel · KT1'
+                          : roleLabel,
                     ),
                   ),
                 ),
@@ -237,37 +240,30 @@ class _ModerationScreenState extends State<ModerationScreen> {
                       context.read<AssetBloc>().add(const LoadAssets()),
                   icon: const Icon(Icons.refresh),
                 ),
-                if (BackofficeConnection.maybeOf(context)?.api != null)
+                if (connection.onLogout != null)
                   IconButton(
                     tooltip: 'Odjavi se',
-                    onPressed: BackofficeConnection.maybeOf(context)?.onLogout,
+                    onPressed: connection.onLogout,
                     icon: const Icon(Icons.logout),
                   ),
-                PopupMenuButton<String>(
-                  tooltip: 'Demonstracione komande',
-                  onSelected: (value) {
-                    final repository = context.read<AssetRepository>();
-                    if (repository is! MemoryModerationRepository) {
-                      return;
-                    }
-                    if (value == 'fail') {
-                      repository.failNext = true;
-                    } else {
-                      repository.reset();
-                    }
-                    context.read<AssetBloc>().add(const LoadAssets());
-                  },
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(
-                      value: 'fail',
-                      child: Text('Izazovi grešku sledećeg zahteva'),
-                    ),
-                    PopupMenuItem(
-                      value: 'reset',
-                      child: Text('Vrati demonstracione podatke'),
-                    ),
-                  ],
-                ),
+                if (workflows.supportsSamples)
+                  PopupMenuButton<String>(
+                    tooltip: 'Demonstracione komande',
+                    onSelected: (value) {
+                      workflows.demonstrate(value);
+                      context.read<AssetBloc>().add(const LoadAssets());
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                        value: 'fail',
+                        child: Text('Izazovi grešku sledećeg zahteva'),
+                      ),
+                      PopupMenuItem(
+                        value: 'reset',
+                        child: Text('Vrati demonstracione podatke'),
+                      ),
+                    ],
+                  ),
               ],
             ),
             body: Column(
@@ -628,10 +624,8 @@ class _ModerationScreenState extends State<ModerationScreen> {
         ),
       );
     }
-    final repository = context.read<AssetRepository>();
-    final submission = repository is ApiAssetRepository
-        ? repository.submissionsByAssetId[asset.id.value]
-        : null;
+    final workflows = BackofficeConnection.of(context).workflows;
+    final submission = workflows.submissionFor(asset.id);
     return Card(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(18),
@@ -721,7 +715,7 @@ class _ModerationScreenState extends State<ModerationScreen> {
               ),
             const SizedBox(height: 14),
             Text(
-              BackofficeConnection.maybeOf(context)?.api == null
+              !workflows.supportsFiles
                   ? 'Ilustracija u KT1 režimu. Privatni rezultat ostaje sačuvan i nakon odbijanja prijave.'
                   : 'Verzija podneta na proveru. Pregled slike rezultata; 3D viewport nije aktivan.',
               style: TextStyle(color: muted, fontSize: 10, height: 1.5),

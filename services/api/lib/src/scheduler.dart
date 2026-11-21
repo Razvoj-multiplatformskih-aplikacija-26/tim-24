@@ -3,17 +3,19 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:domain/domain.dart';
-import 'package:http/http.dart' as http;
 import 'database.dart';
-import 'security.dart';
 import 'service.dart';
+import 'worker_client.dart';
 
 /// The API owns admission and persistence. A worker only returns candidate bytes.
 class JobScheduler {
   JobScheduler(this.service,
-      {required this.workerUrl, required this.workerSecret});
+      {required this.workerUrl,
+      required this.workerSecret,
+      this.workerTimeout = const Duration(minutes: 45)});
   final HedrionService service;
   final String workerUrl, workerSecret;
+  final Duration workerTimeout;
   Timer? _timer;
   bool _claiming = false;
   final Set<Future<void>> _active = {};
@@ -115,9 +117,13 @@ class JobScheduler {
         'jobId': job['id'],
         'ownerId': job['ownerId'],
         'inputType': job['inputType'],
-        'sourcePrompt': job['sourcePrompt']
+        'sourcePrompt': job['sourcePrompt'],
+        if (job['modelProvider'] != null || job['provider'] != null)
+          'modelProvider': job['modelProvider'] ?? job['provider'],
+        if (job['seed'] != null) 'seed': job['seed']
       };
-      if (job['sourceImageFileId'] != null) {
+      if (job['inputType'] != 'text_to_3d' &&
+          job['sourceImageFileId'] != null) {
         final file = await service.db.transaction((tx) => tx.one(
             'SELECT storage_key FROM stored_files WHERE id=@id AND deleted_at IS NULL',
             {'id': job['sourceImageFileId']}));
@@ -129,29 +135,12 @@ class JobScheduler {
                 '${service.storagePath}${Platform.pathSeparator}${file['storage_key']}')
             .readAsBytes());
       }
-      final encoded = jsonEncode(body),
-          timestamp = '${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
-          nonce = newId();
-      final response = await http
-          .post(Uri.parse('$workerUrl/internal/v1/generate'),
-              headers: {
-                'content-type': 'application/json',
-                'authorization': 'Bearer $workerSecret',
-                'x-hedrion-timestamp': timestamp,
-                'x-hedrion-nonce': nonce,
-                'x-hedrion-signature':
-                    workerSignature(workerSecret, timestamp, nonce, encoded)
-              },
-              body: encoded)
-          .timeout(const Duration(minutes: 20));
-      if (response.statusCode != 200) {
-        throw const ApiFailure(502, 'workerFailed', 'Obrada nije uspela.');
-      }
-      if (response.bodyBytes.length > 200000000) {
-        throw const ApiFailure(
-            502, 'workerOutputTooLarge', 'Rezultat je prevelik.');
-      }
-      await complete(job['id'] as String, jsonMap(jsonDecode(response.body)));
+      final result = await WorkerClient(
+        url: workerUrl,
+        secret: workerSecret,
+        timeout: workerTimeout,
+      ).generate(body);
+      await complete(job['id'] as String, result);
     } catch (error) {
       try {
         await markFailed(job['id'] as String,
@@ -195,6 +184,32 @@ class JobScheduler {
         if (assetRow == null) {
           throw const ApiFailure(404, 'assetDeleted', 'Model je obrisan.');
         }
+        final jobData = jsonMap(row['data']);
+        final selectedProvider =
+            jobData['modelProvider'] ?? jobData['provider'];
+        if ((selectedProvider != null &&
+                result['provider'] != selectedProvider) ||
+            (service.generationProvider == 'modal' &&
+                !HedrionService.generationModelLabels
+                    .containsKey(selectedProvider))) {
+          throw const ApiFailure(502, 'invalidWorkerOutput',
+              'Worker je vratio rezultat drugog modela.');
+        }
+        Json? referenceFile;
+        if (result['referenceImageBase64'] != null) {
+          final reference = base64Decode(text(result, 'referenceImageBase64'));
+          if (!HedrionService.validImage(reference, 'image/png')) {
+            throw const ApiFailure(
+                502, 'invalidWorkerOutput', 'Referentna slika nije ispravna.');
+          }
+          referenceFile = await service.persistFile(
+              tx,
+              row['owner_id'] as String,
+              row['asset_id'] as String,
+              'source',
+              reference,
+              'image/png');
+        }
         final modelFile = await service.persistFile(
             tx,
             row['owner_id'] as String,
@@ -212,6 +227,9 @@ class JobScheduler {
         final json = jsonMap(assetRow['data'])
           ..['outputFileId'] = modelFile['id']
           ..['previewFileId'] = previewFile['id'];
+        if (referenceFile != null) {
+          json['sourceImageFileId'] = referenceFile['id'];
+        }
         final asset = Asset.fromJson(json);
         service.validated(validateTransition(asset, AssetLifecycle.ready,
             const Actor(id: UserId('scheduler'), role: UserRole.admin)));
@@ -223,7 +241,11 @@ class JobScheduler {
           ..['provider'] = result['provider']
           ..['outputFileId'] = modelFile['id']
           ..['metadata'] = result['metadata']
-          ..['metrics'] = result['metrics'];
+          ..['metrics'] = result['metrics']
+          ..['referenceImageMetrics'] = result['referenceImageMetrics'];
+        if (referenceFile != null) {
+          data['sourceImageFileId'] = referenceFile['id'];
+        }
         await tx.query(
             "UPDATE generation_jobs SET status='succeeded',finished_at=@now,lease_until=NULL,data=@data::jsonb WHERE id=@id",
             {'now': service.now, 'id': id, 'data': jsonEncode(data)});

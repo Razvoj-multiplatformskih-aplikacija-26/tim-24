@@ -1,8 +1,6 @@
-import 'package:domain/domain.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
 import 'app_connection.dart';
-import 'memory_asset_repository.dart';
+import 'studio_workflows.dart';
 
 class ProjectFilter extends StatefulWidget {
   const ProjectFilter({
@@ -20,25 +18,19 @@ class ProjectFilter extends StatefulWidget {
 
 class _ProjectFilterState extends State<ProjectFilter> {
   Future<List<Map<String, dynamic>>>? projects;
+  StudioWorkflows? _workflows;
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    projects ??= load();
+    final workflows = StudioConnection.maybeOf(context)!.workflows;
+    if (!identical(workflows, _workflows)) {
+      _workflows = workflows;
+      projects = load();
+    }
   }
 
-  Future<List<Map<String, dynamic>>> load() async {
-    final api = StudioConnection.maybeOf(context)?.client;
-    if (api == null) {
-      final repository = context.read<AssetRepository>();
-      return repository is MemoryAssetRepository
-          ? repository.projects.toList()
-          : [];
-    }
-    final data = await api.request('GET', '/api/v1/projects');
-    return (data['projects'] as List)
-        .map((p) => Map<String, dynamic>.from(p as Map))
-        .toList();
-  }
+  Future<List<Map<String, dynamic>>> load() =>
+      StudioConnection.maybeOf(context)!.workflows.loadProjects();
 
   @override
   Widget build(BuildContext context) =>

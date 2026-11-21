@@ -14,6 +14,8 @@ import 'projects_screen.dart';
 import 'profile_screen.dart';
 import 'workspace_screen.dart';
 import 'generation_setup.dart';
+import 'studio_workflows.dart';
+import 'studio_workflow_adapters.dart';
 
 void main() {
   //Priprema veze izmedju flutter koda i platforme(android)
@@ -37,12 +39,14 @@ class HedrionStudio extends StatefulWidget {
     this.offline,
     this.onLogout,
     this.initialLocation,
+    this.workflows,
   });
   final AssetRepository? repository;
   final HedrionApiClient? api;
   final OfflineAssetRepository? offline;
   final VoidCallback? onLogout;
   final String? initialLocation;
+  final StudioWorkflows? workflows;
 
   @override
   State<HedrionStudio> createState() => _HedrionStudioState();
@@ -73,8 +77,9 @@ class _HedrionStudioState extends State<HedrionStudio> {
       }
       bloc.add(const LoadAssets());
     } on DomainException catch (e) {
-      if (e.error.code == ErrorCode.unauthenticated) {
-        widget.onLogout?.call();
+      if (e.error.code == ErrorCode.unauthenticated ||
+          e.error.code == ErrorCode.sessionExpired) {
+        return;
       } else if (e.error.code == ErrorCode.unavailable &&
           widget.offline?.online == true) {
         widget.offline!.online = false;
@@ -91,6 +96,13 @@ class _HedrionStudioState extends State<HedrionStudio> {
 
   late final AssetRepository repository =
       widget.repository ?? MemoryAssetRepository();
+  late final StudioWorkflows workflows =
+      widget.workflows ??
+      createStudioWorkflows(
+        repository: repository,
+        client: widget.api,
+        offline: widget.offline,
+      );
   // Ako repository nije prosledjen napravi novi memoryAssetRepository(),
   // u nasem demo slucaju zove bira se memoryassetrepo
   // zove se reset()
@@ -161,6 +173,7 @@ class _HedrionStudioState extends State<HedrionStudio> {
   ///Ovo se zove posle init, pravimo ekran
   @override
   Widget build(BuildContext context) => StudioConnection(
+    workflows: workflows,
     client: widget.api, // veza ka apiu
     offline:
         widget.offline, // repozitorijum za rad i sinhrnizaciju kad ema mreze

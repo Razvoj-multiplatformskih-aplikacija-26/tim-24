@@ -8,7 +8,7 @@ class ProfileScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final connection = StudioConnection.maybeOf(context);
-    final user = connection?.client?.user;
+    final user = connection?.user;
     final offline = connection?.offline;
     return StudioShell(
       title: 'Profil i podešavanja',

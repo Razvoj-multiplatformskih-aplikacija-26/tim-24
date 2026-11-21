@@ -2,23 +2,30 @@ import 'package:domain/domain.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:hedrion_api_client/hedrion_api_client.dart';
+import 'package:platform_session/platform_session.dart';
 import 'main.dart';
 import 'studio_theme.dart';
 
 class LiveBackoffice extends StatefulWidget {
-  const LiveBackoffice({super.key});
+  const LiveBackoffice({super.key, this.client});
+  final HedrionApiClient? client;
   @override
   State<LiveBackoffice> createState() => _LiveBackofficeState();
 }
 
 class _LiveBackofficeState extends State<LiveBackoffice> {
-  final client = HedrionApiClient(
-    const String.fromEnvironment(
-      'HEDRION_API_URL',
-      defaultValue: 'http://localhost:8080',
-    ),
-    browserScope: 'backoffice',
-  );
+  late final client =
+      widget.client ??
+      HedrionApiClient(
+        const String.fromEnvironment(
+          'HEDRION_API_URL',
+          defaultValue: 'http://localhost:8080',
+        ),
+        browserScope: 'backoffice',
+        sessionStorage: kIsWeb
+            ? null
+            : const SecureSessionStorage(key: 'hedrion-backoffice-session'),
+      );
   final email = TextEditingController(), password = TextEditingController();
   bool busy = false;
   String? error;
@@ -27,17 +34,21 @@ class _LiveBackofficeState extends State<LiveBackoffice> {
   @override
   void initState() {
     super.initState();
+    client.onSessionExpired = sessionExpired;
     restore();
   }
 
   Future<void> restore() async {
-    if (kIsWeb) {
-      try {
-        await client.refresh();
-        authenticated = ['moderator', 'admin'].contains(client.user?['role']);
-      } catch (_) {
-        /* No browser refresh session means show login. */
+    try {
+      if (await client.restoreSession()) {
+        ensureBackofficeAccess();
+        authenticated = true;
       }
+    } on DomainException catch (e) {
+      error = errorMessage(e.error);
+      if (e.error.code == ErrorCode.backofficeRoleRequired) await logout();
+    } catch (_) {
+      error = 'Sačuvana sesija nije dostupna. Prijavite se ponovo.';
     }
     if (mounted) {
       setState(() => restoring = false);
@@ -51,13 +62,12 @@ class _LiveBackofficeState extends State<LiveBackoffice> {
     });
     try {
       await client.login(email.text.trim(), password.text);
-      if (!['moderator', 'admin'].contains(client.user!['role'])) {
-        await client.logout();
-        throw const DomainException(DomainError(ErrorCode.forbidden));
-      }
+      ensureBackofficeAccess();
       authenticated = true;
+      password.clear();
     } on DomainException catch (e) {
       error = errorMessage(e.error);
+      if (e.error.code == ErrorCode.backofficeRoleRequired) await logout();
     } catch (_) {
       error = 'Prijava nije uspela.';
     }
@@ -74,6 +84,24 @@ class _LiveBackofficeState extends State<LiveBackoffice> {
     }
     if (mounted) {
       setState(() => authenticated = false);
+    }
+    password.clear();
+  }
+
+  void ensureBackofficeAccess() {
+    final role = UserRole.values.byName(client.user!['role'] as String);
+    validateBackofficeAccess(
+      Actor(id: UserId(client.user!['id'] as String), role: role),
+    ).orThrow;
+  }
+
+  Future<void> sessionExpired() async {
+    password.clear();
+    if (mounted) {
+      setState(() {
+        authenticated = false;
+        error = errorMessage(const DomainError(ErrorCode.sessionExpired));
+      });
     }
   }
 
@@ -176,20 +204,4 @@ class _LiveBackofficeState extends State<LiveBackoffice> {
       ),
     );
   }
-}
-
-class BackofficeConnection extends InheritedWidget {
-  const BackofficeConnection({
-    super.key,
-    required super.child,
-    this.api,
-    this.onLogout,
-  });
-  final HedrionApiClient? api;
-  final VoidCallback? onLogout;
-  static BackofficeConnection? maybeOf(BuildContext context) =>
-      context.dependOnInheritedWidgetOfExactType<BackofficeConnection>();
-  @override
-  bool updateShouldNotify(BackofficeConnection oldWidget) =>
-      oldWidget.api != api;
 }

@@ -5,13 +5,12 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
-import 'package:hedrion_api_client/hedrion_api_client.dart';
 import 'package:image_picker/image_picker.dart';
 import 'app_connection.dart';
 import 'asset_fields.dart';
 import 'asset_preview.dart';
 import 'generation_setup.dart';
-import 'memory_asset_repository.dart';
+import 'studio_workflows.dart';
 import 'mesh_scene.dart';
 import 'model_viewport.dart';
 import 'studio_chrome.dart';
@@ -22,9 +21,11 @@ class WorkspaceScreen extends StatefulWidget {
     super.key,
     this.flow = GenerationFlow.textTo3d,
     this.gateway = const LocalPreviewGateway(),
+    this.pickReferenceImage,
   });
   final GenerationFlow flow;
   final GenerationGateway gateway;
+  final Future<XFile?> Function()? pickReferenceImage;
   @override
   State<WorkspaceScreen> createState() => _WorkspaceScreenState();
 }
@@ -42,8 +43,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final previews = <GenerationPreview>[];
   GenerationPreview? activePreview;
   Asset? activeAsset;
-  Asset? _textDraft;
-  HedrionApiClient? _api;
+  Asset? _pendingDraft;
+  Uint8List? _uploadedReference;
+  StudioWorkflows? _workflows;
   Future<Map<String, dynamic>>? _capabilities;
   late String model = widget.flow == GenerationFlow.textToImage
       ? 'hedrion-image'
@@ -59,10 +61,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final api = StudioConnection.maybeOf(context)?.client;
-    if (api != _api) {
-      _api = api;
+    final workflows = StudioConnection.maybeOf(context)?.workflows;
+    if (workflows != _workflows) {
+      _workflows = workflows;
       _capabilities = null;
+      model = flow == GenerationFlow.textToImage
+          ? (workflows?.supportsSamples != false
+                ? 'hedrion-image'
+                : 'qwen_image_21_turbo')
+          : (workflows?.supportsSamples != false ? 'hedrion-3d' : 'spar3d');
     }
   }
 
@@ -89,20 +96,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       prompt.text = prompts[value] ?? '';
       error = null;
       model = value == GenerationFlow.textToImage
-          ? 'hedrion-image'
-          : 'hedrion-3d';
+          ? (_workflows?.supportsSamples != false
+                ? 'hedrion-image'
+                : 'qwen_image_21_turbo')
+          : (_workflows?.supportsSamples != false ? 'hedrion-3d' : 'spar3d');
+      _pendingDraft = null;
+      _uploadedReference = null;
       activeAsset = null;
     });
   }
 
   Future<void> _pickImage() async {
     try {
-      final file = await ImagePicker().pickImage(
-        source: ImageSource.gallery,
-        maxWidth: 2048,
-        maxHeight: 2048,
-        requestFullMetadata: false,
-      );
+      final file = widget.pickReferenceImage != null
+          ? await widget.pickReferenceImage!()
+          : await ImagePicker().pickImage(
+              source: ImageSource.gallery,
+              maxWidth: 2048,
+              maxHeight: 2048,
+              requestFullMetadata: false,
+            );
       if (file == null) return;
       final bytes = await file.readAsBytes();
       if (bytes.length > 10000000) throw StateError('Izaberi sliku do 10 MB.');
@@ -198,6 +211,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (saving) return;
     final setup = _setup();
     final queueText = setup.flow == GenerationFlow.textTo3d;
+    if (_workflows?.supportsSamples == false &&
+        setup.flow == GenerationFlow.textToImage) {
+      setState(
+        () => error =
+            'Za tekstualni 3D unos izaberi Text to 3D. Referentnu sliku priprema Qwen.',
+      );
+      return;
+    }
     if (!_hasRequiredReference(setup) ||
         (queueText && !_hasRequiredPrompt(setup))) {
       return;
@@ -229,18 +250,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     });
     final repository = context.read<AssetRepository>();
     final bloc = context.read<AssetBloc>();
-    final connection = StudioConnection.maybeOf(context);
-    final api = connection?.client;
+    final workflows = StudioConnection.maybeOf(context)!.workflows;
     Asset? asset;
     try {
-      if (queueText && connection?.offline?.online == false) {
+      if (!workflows.online) {
         throw const DomainException(DomainError(ErrorCode.unavailable));
       }
       final projectId = projectName.isEmpty
           ? null
           : await _findOrCreateProject(projectName);
       if (!mounted) return;
-      final previous = queueText ? _textDraft : null;
+      final previous = _pendingDraft;
       if (previous == null) {
         asset = await repository.createAsset(draft(projectId));
       } else if (previous.title != draftTitle.trim() ||
@@ -248,8 +268,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           previous.category != draftCategory ||
           previous.projectId != projectId ||
           !listEquals(previous.tags, draftTags)) {
-        final onlineRepository = connection?.offline?.remote ?? repository;
-        asset = await onlineRepository.updateAsset(
+        asset = await workflows.updateAsset(
           previous.copyWith(
             title: draftTitle,
             description: setup.prompt,
@@ -264,46 +283,32 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         asset = previous;
       }
 
-      if (queueText) {
-        _textDraft = asset;
-        final key = '${asset.id.value}-${asset.revision}-text-to-3d';
-        if (api == null) {
-          await repository.transitionAsset(
-            asset.id,
-            AssetLifecycle.queued,
-            baseRevision: asset.revision,
-            idempotencyKey: key,
-          );
-        } else {
-          await api.generate(
-            asset.id,
-            baseRevision: asset.revision,
-            idempotencyKey: key,
-            inputType: 'text_to_3d',
-            sourcePrompt: asset.description,
-          );
-        }
-        _textDraft = null;
-      } else if (api != null &&
+      _pendingDraft = asset;
+      if (workflows.uploadsReference &&
           setup.flow == GenerationFlow.imageTo3d &&
-          setup.imageBytes != null) {
-        try {
-          await api.uploadImage(
-            asset.id,
-            setup.imageBytes!,
-            mime: setup.imageBytes![0] == 137 ? 'image/png' : 'image/jpeg',
-          );
-        } catch (_) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  'Nacrt je sačuvan. Dodaj referentnu sliku ponovo u detaljima modela.',
-                ),
-              ),
-            );
-          }
-        }
+          setup.imageBytes != null &&
+          !identical(_uploadedReference, setup.imageBytes)) {
+        asset = await workflows.uploadImage(
+          asset.id,
+          setup.imageBytes!,
+          mime: setup.imageBytes![0] == 137 ? 'image/png' : 'image/jpeg',
+        );
+        _pendingDraft = asset;
+        _uploadedReference = setup.imageBytes;
+      }
+      if (queueText || workflows.queuesImageOnSubmit) {
+        final key =
+            '${asset.id.value}-${asset.revision}-${setup.flow.route}-${setup.modelId}-${setup.seed}';
+        await workflows.generate(
+          asset,
+          idempotencyKey: key,
+          inputType: queueText ? 'text_to_3d' : 'image_to_3d',
+          sourcePrompt: queueText ? setup.prompt : null,
+          modelProvider: setup.modelId,
+          seed: setup.seed,
+        );
+        _pendingDraft = null;
+        _uploadedReference = null;
       }
       if (mounted) {
         context.go('/assets/${asset.id.value}');
@@ -325,21 +330,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Future<String> _findOrCreateProject(String name) async {
-    final api = StudioConnection.maybeOf(context)?.client;
-    if (api == null) {
-      final repository =
-          context.read<AssetRepository>() as MemoryAssetRepository;
-      final existing = repository.projects.where((p) => p['name'] == name);
-      return (existing.firstOrNull ?? repository.saveProject(name))['id']
-          as String;
-    }
-    final records = await api.request('GET', '/api/v1/projects');
-    final existing = (records['projects'] as List)
-        .cast<Map<String, dynamic>>()
-        .where((p) => p['name'] == name);
-    final record =
-        existing.firstOrNull ??
-        await api.request('POST', '/api/v1/projects', body: {'name': name});
+    final workflows = StudioConnection.maybeOf(context)!.workflows;
+    final projects = await workflows.loadProjects();
+    final existing = projects
+        .where((project) => project['name'] == name)
+        .firstOrNull;
+    final record = existing ?? await workflows.saveProject(name);
     return record['id'] as String;
   }
 
@@ -430,7 +426,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         error = null;
                         activePreview = null;
                         activeAsset = null;
-                        _textDraft = null;
+                        _pendingDraft = null;
+                        _uploadedReference = null;
                       }),
                 icon: const Icon(
                   Icons.add_box_outlined,
@@ -530,7 +527,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 _label(
                   'AI Model',
                   trailing: Tooltip(
-                    message: 'Izbor modela je priprema za buduće providere.',
+                    message: _workflows?.supportsSamples != false
+                        ? 'Lokalni demo ne pokreće AI modele.'
+                        : 'Generisanje se izvršava na udaljenom GPU-u.',
                     child: Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 6,
@@ -540,9 +539,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         color: accent.withValues(alpha: .1),
                         borderRadius: BorderRadius.circular(4),
                       ),
-                      child: const Text(
-                        'PREVIEW',
-                        style: TextStyle(
+                      child: Text(
+                        _workflows?.supportsSamples != false ? 'DEMO' : 'MODAL',
+                        style: const TextStyle(
                           color: accent,
                           fontSize: 8,
                           letterSpacing: .8,
@@ -566,7 +565,29 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     fontSize: 12,
                     color: Color(0xffeceee7),
                   ),
-                  items: flow == GenerationFlow.textToImage
+                  items: _workflows?.supportsSamples == false
+                      ? (flow == GenerationFlow.textToImage
+                            ? const [
+                                DropdownMenuItem(
+                                  value: 'qwen_image_21_turbo',
+                                  child: Text('Qwen Image 2.1 Turbo'),
+                                ),
+                              ]
+                            : const [
+                                DropdownMenuItem(
+                                  value: 'spar3d',
+                                  child: Text('SPAR3D · Fast'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'hunyuan3d_21',
+                                  child: Text('Hunyuan3D 2.1 · Standard'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'trellis2',
+                                  child: Text('TRELLIS.2 · Quality'),
+                                ),
+                              ])
+                      : flow == GenerationFlow.textToImage
                       ? const [
                           DropdownMenuItem(
                             value: 'hedrion-image',
@@ -590,7 +611,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   onChanged: (v) => setState(() => model = v!),
                 ),
                 const SizedBox(height: 20),
-                if (flow != GenerationFlow.textToImage) ...[
+                if (_workflows?.supportsSamples != false &&
+                    flow != GenerationFlow.textToImage) ...[
                   _label('Model type'),
                   const SizedBox(height: 10),
                   _segments(
@@ -608,7 +630,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   ),
                   _toggle('A / T Pose', pose, (v) => setState(() => pose = v)),
                 ],
-                if (flow == GenerationFlow.imageTo3d)
+                if (_workflows?.supportsSamples != false &&
+                    flow == GenerationFlow.imageTo3d)
                   _toggle(
                     'Image enhancement',
                     enhance,
@@ -632,7 +655,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       keyboardType: TextInputType.number,
                       decoration: const InputDecoration(
                         labelText: 'Seed',
-                        helperText: 'Sačuvan uz demo zahtev.',
+                        helperText:
+                            'Isti seed i podešavanja omogućavaju ponavljanje.',
                       ),
                       onChanged: (v) => seed = int.tryParse(v) ?? 42,
                     ),
@@ -663,11 +687,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     ),
                   ),
                 ),
-              if (flow == GenerationFlow.textTo3d) ...[
+              if (flow == GenerationFlow.textTo3d ||
+                  (_workflows?.supportsSamples == false &&
+                      flow == GenerationFlow.imageTo3d)) ...[
                 _textGenerationAction(),
                 const SizedBox(height: 4),
               ],
-              if (flow == GenerationFlow.imageTo3d) ...[
+              if (_workflows?.supportsSamples != false &&
+                  flow == GenerationFlow.imageTo3d) ...[
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton.icon(
@@ -678,13 +705,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 ),
                 const SizedBox(height: 4),
               ],
-              TextButton.icon(
-                onPressed: previewing || saving ? null : _showDemoPreview,
-                icon: const Icon(Icons.view_in_ar_outlined, size: 18),
-                label: Text(
-                  previewing ? 'Učitavanje uzorka…' : 'Prikaži demo uzorak',
+              if (_workflows?.supportsSamples == false &&
+                  flow == GenerationFlow.textToImage)
+                const Text(
+                  'Izaberi Text to 3D: Qwen priprema referentnu sliku, a izabrani model pravi 3D rezultat.',
+                  style: TextStyle(color: muted, fontSize: 12),
                 ),
-              ),
+              if (_workflows?.supportsSamples != false)
+                TextButton.icon(
+                  onPressed: previewing || saving ? null : _showDemoPreview,
+                  icon: const Icon(Icons.view_in_ar_outlined, size: 18),
+                  label: Text(
+                    previewing ? 'Učitavanje uzorka…' : 'Prikaži demo uzorak',
+                  ),
+                ),
               const Text(
                 'Unapred pripremljen uzorak za probu prikaza.',
                 textAlign: TextAlign.center,
@@ -702,6 +736,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       width: double.infinity,
       child: FilledButton.icon(
         onPressed: previewing || saving ? null : _submitCreation,
+
+        ///poziva se funkcija submitCreation
         icon: const Icon(Icons.auto_awesome, size: 19),
         label: Text(
           saving
@@ -712,10 +748,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         ),
       ),
     );
-    final api = _api;
-    if (api == null) return requestButton(demo: true);
+    final workflows = _workflows;
+    if (workflows == null) return const SizedBox.shrink();
     return FutureBuilder(
-      future: _capabilities ??= api.request('GET', '/api/v1/capabilities'),
+      future: _capabilities ??= workflows.capabilities(),
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return const Text('Provera dostupnosti generisanja…');
@@ -726,9 +762,24 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             child: const Text('Proveri dostupnost ponovo'),
           );
         }
-        if (snapshot.data?['textTo3d'] != true) {
+        final capability = flow == GenerationFlow.imageTo3d
+            ? 'imageTo3d'
+            : 'textTo3d';
+        if (snapshot.data?[capability] != true) {
           return const Text(
-            'Text to 3D još nije dostupan. Možeš da koristiš Image to 3D.',
+            'Generisanje trenutno nije dostupno. Pokušaj ponovo kasnije.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: muted),
+          );
+        }
+        final models = snapshot.data?['generationModels'] as List?;
+        final selection = models
+            ?.whereType<Map>()
+            .where((item) => item['id'] == model)
+            .firstOrNull;
+        if (selection != null && selection['available'] == false) {
+          return const Text(
+            'Izabrani model trenutno nije dostupan. Izaberi drugi model.',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 12, color: muted),
           );
@@ -995,7 +1046,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                       ),
                       const SizedBox(height: 7),
                       Text(
-                        activeAsset == null ? 'DEMO UZORAK' : 'SAVED ASSET',
+                        activeAsset == null
+                            ? (_workflows?.supportsSamples != false
+                                  ? 'DEMO UZORAK'
+                                  : 'NOVI MODEL')
+                            : 'SAVED ASSET',
                         style: const TextStyle(
                           fontSize: 8,
                           letterSpacing: 1.4,
@@ -1132,7 +1187,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   Widget _scene() {
     if (activeAsset != null) {
-      return Center(child: StudioPreview(asset: activeAsset!, height: 420));
+      return Center(
+        child: StudioPreview(
+          asset: activeAsset!,
+          height: 420,
+          interactive: true,
+        ),
+      );
+    }
+    if (_workflows?.supportsSamples == false) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Text(
+            'Pošalji sliku ili opiši objekat.\nOvde možeš da pregledaš sačuvane rezultate iz biblioteke.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: muted, height: 1.7),
+          ),
+        ),
+      );
     }
     if (flow == GenerationFlow.textToImage) {
       return Center(

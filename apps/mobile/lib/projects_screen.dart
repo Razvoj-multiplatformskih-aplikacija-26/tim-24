@@ -3,9 +3,9 @@ import 'package:domain/domain.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'app_connection.dart';
-import 'memory_asset_repository.dart';
 import 'studio_screens.dart';
 import 'studio_theme.dart';
+import 'studio_workflows.dart';
 
 class ProjectsScreen extends StatefulWidget {
   const ProjectsScreen({super.key});
@@ -15,24 +15,20 @@ class ProjectsScreen extends StatefulWidget {
 
 class _ProjectsScreenState extends State<ProjectsScreen> {
   Future<List<Map<String, dynamic>>>? projects;
+  StudioWorkflows? _workflows;
   bool busy = false;
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    projects ??= load();
+    final workflows = StudioConnection.maybeOf(context)!.workflows;
+    if (!identical(workflows, _workflows)) {
+      _workflows = workflows;
+      projects = load();
+    }
   }
 
-  Future<List<Map<String, dynamic>>> load() async {
-    final api = StudioConnection.maybeOf(context)?.client;
-    if (api != null) {
-      final response = await api.request('GET', '/api/v1/projects');
-      return (response['projects'] as List)
-          .map((p) => Map<String, dynamic>.from(p as Map))
-          .toList();
-    }
-    return (context.read<AssetRepository>() as MemoryAssetRepository).projects
-        .toList();
-  }
+  Future<List<Map<String, dynamic>>> load() =>
+      StudioConnection.maybeOf(context)!.workflows.loadProjects();
 
   void refresh() {
     setState(() => projects = load());
@@ -80,23 +76,11 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     if (result == true && mounted) {
       setState(() => busy = true);
       try {
-        final api = StudioConnection.maybeOf(context)?.client;
-        if (api == null) {
-          (context.read<AssetRepository>() as MemoryAssetRepository)
-              .saveProject(name.text, id: project?['id'] as String?);
-        } else {
-          await api.request(
-            project == null ? 'POST' : 'PATCH',
-            project == null
-                ? '/api/v1/projects'
-                : '/api/v1/projects/${project['id']}',
-            revision: project?['revision'] as int?,
-            body: {
-              'name': name.text.trim(),
-              if (project != null) 'baseRevision': project['revision'],
-            },
-          );
-        }
+        await StudioConnection.maybeOf(context)!.workflows.saveProject(
+          name.text,
+          id: project?['id'] as String?,
+          baseRevision: project?['revision'] as int?,
+        );
         if (mounted) {
           refresh();
         }
@@ -116,10 +100,8 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
   }
 
   Future<void> assign(Asset asset, String? projectId) async {
-    final connection = StudioConnection.maybeOf(context);
-    if (connection?.offline != null &&
-        (!connection!.offline!.online ||
-            connection.offline!.pendingCount > 0)) {
+    final workflows = StudioConnection.maybeOf(context)!.workflows;
+    if (!workflows.canModifyCollections) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -131,26 +113,9 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     }
     setState(() => busy = true);
     try {
-      if (connection?.client != null) {
-        await connection!.client!.request(
-          'PATCH',
-          '/api/v1/assets/${asset.id.value}',
-          revision: asset.revision,
-          body: {'projectId': projectId, 'baseRevision': asset.revision},
-        );
-        if (mounted) {
-          context.read<AssetBloc>().add(const LoadAssets());
-        }
-      } else {
-        context.read<AssetBloc>().add(
-          UpdateAsset(
-            asset.copyWith(
-              projectId: projectId,
-              clearProject: projectId == null,
-            ),
-            asset.revision,
-          ),
-        );
+      await workflows.assignProject(asset, projectId);
+      if (mounted) {
+        context.read<AssetBloc>().add(const LoadAssets());
       }
     } on DomainException catch (e) {
       if (mounted) {

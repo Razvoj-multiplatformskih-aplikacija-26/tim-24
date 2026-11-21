@@ -18,11 +18,14 @@ dependencies:
   image_picker: ^1.2.4
   file_selector: ^1.1.0
   hedrion_api_client: any
+  platform_session: any
   sqflite: ^2.4.5
   flutter_secure_storage: ^11.2.0
   share_plus: ^13.3.1
+  model_viewer_plus: ^1.10.0
 
 dev_dependencies:
+  http: ^1.6.0
   integration_test:
     sdk: flutter
   flutter_test:

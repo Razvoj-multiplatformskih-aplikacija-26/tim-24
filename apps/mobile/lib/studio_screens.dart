@@ -12,6 +12,7 @@ import 'studio_chrome.dart';
 import 'studio_welcome.dart';
 export 'studio_chrome.dart' show StudioShell;
 import 'generation_history.dart';
+import 'generation_request.dart';
 import 'reference_image_button.dart';
 import 'asset_fields.dart';
 import 'project_filter.dart';
@@ -352,12 +353,15 @@ class AssetDetailScreen extends StatelessWidget {
                   ),
                   if (asset.previewFileId != null) ...[
                     const SizedBox(height: 18),
-                    StudioPreview(asset: asset, height: 330),
+                    StudioPreview(asset: asset, height: 380, interactive: true),
                     const SizedBox(height: 12),
                     Text(
-                      StudioConnection.maybeOf(context)?.client == null
+                      StudioConnection.maybeOf(
+                                context,
+                              )?.workflows.supportsSamples !=
+                              false
                           ? 'Demo ilustracija modela'
-                          : 'Slika rezultata',
+                          : '3D pregled · prevuci za rotaciju, približi za detalje',
                       style: const TextStyle(color: muted, fontSize: 12),
                     ),
                   ],
@@ -367,13 +371,19 @@ class AssetDetailScreen extends StatelessWidget {
                     runSpacing: 10,
                     children: [
                       if (asset.outputFileId != null &&
-                          StudioConnection.maybeOf(context)?.client != null)
+                          StudioConnection.maybeOf(
+                                context,
+                              )?.workflows.supportsFiles ==
+                              true)
                         _DownloadButton(asset: asset),
                       if ([
                             AssetLifecycle.draft,
                             AssetLifecycle.failed,
                           ].contains(asset.lifecycle) &&
-                          StudioConnection.maybeOf(context)?.client != null)
+                          StudioConnection.maybeOf(
+                                context,
+                              )?.workflows.supportsFiles ==
+                              true)
                         ReferenceImageButton(asset: asset),
                       FilledButton.tonalIcon(
                         onPressed: state.busy
@@ -402,24 +412,9 @@ class AssetDetailScreen extends StatelessWidget {
                         AssetLifecycle.draft,
                         AssetLifecycle.failed,
                       ].contains(asset.lifecycle))
-                        FilledButton.icon(
-                          onPressed: state.busy
-                              ? null
-                              : () => context.read<AssetBloc>().add(
-                                  TransitionAsset(
-                                    asset.id,
-                                    AssetLifecycle.queued,
-                                    baseRevision: asset.revision,
-                                    idempotencyKey:
-                                        '${asset.id.value}-${asset.revision}-generation',
-                                  ),
-                                ),
-                          icon: const Icon(Icons.auto_awesome),
-                          label: Text(
-                            asset.lifecycle == AssetLifecycle.failed
-                                ? 'Pokušaj ponovo'
-                                : 'Zatraži generisanje',
-                          ),
+                        AssetGenerationButton(
+                          asset: asset,
+                          disabled: state.busy,
                         ),
                       if (asset.lifecycle == AssetLifecycle.ready)
                         FilledButton.icon(
@@ -554,7 +549,10 @@ class AssetDetailScreen extends StatelessWidget {
                       child: Padding(
                         padding: EdgeInsets.all(20),
                         child: Text(
-                          StudioConnection.maybeOf(context)?.client == null
+                          StudioConnection.maybeOf(
+                                    context,
+                                  )?.workflows.supportsSamples !=
+                                  false
                               ? 'KT1 čuva zahtev u lokalnoj memoriji. Serverski red i worker aktiviraju se u API režimu.'
                               : 'Posao se izvršava na serveru. Napuštanje stranice neće ga zaustaviti. Stanje se automatski osvežava.',
                           style: TextStyle(color: muted),
@@ -584,9 +582,9 @@ class AssetDetailScreen extends StatelessWidget {
     final title = TextEditingController(text: asset.title),
         description = TextEditingController(text: asset.description),
         tags = TextEditingController(text: asset.tags.join(', '));
-    final offline = StudioConnection.maybeOf(context)?.offline;
-    final canEditTags =
-        offline == null || (offline.online && offline.pendingCount == 0);
+    final canEditTags = StudioConnection.maybeOf(
+      context,
+    )!.workflows.canModifyCollections;
     final key = GlobalKey<FormState>();
     final result = await showDialog<bool>(
       context: context,
@@ -818,10 +816,10 @@ class _DownloadButton extends StatefulWidget {
 class _DownloadButtonState extends State<_DownloadButton> {
   bool busy = false;
   Future<void> download() async {
-    final api = StudioConnection.maybeOf(context)!.client!;
+    final workflows = StudioConnection.maybeOf(context)!.workflows;
     setState(() => busy = true);
     try {
-      final bytes = await api.download(widget.asset);
+      final bytes = await workflows.download(widget.asset);
       final name =
           '${widget.asset.title.replaceAll(RegExp(r'[^a-zA-Z0-9\u0400-\u04ff\u0100-\u017f_-]'), '_')}.glb';
       final file = XFile.fromData(

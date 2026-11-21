@@ -40,7 +40,7 @@ class SyncPanel extends StatelessWidget {
             TextButton(
               onPressed: () async {
                 try {
-                  await connection!.client!.me();
+                  await connection!.verifySession();
                   offline.online = true;
                   final count = await offline.sync();
                   if (context.mounted) {

@@ -1,5 +1,20 @@
 # Licence i neizabrani eksperimentalni kandidati
 
+## Izbor tima od 14.11.2026.
+
+| Model | Zvanični izvor licence |
+|---|---|
+| SPAR3D | [Stability Community](https://github.com/Stability-AI/stable-point-aware-3d/blob/main/LICENSE.md); za komercijalnu upotrebu postoje registracija i prag prihoda |
+| Hunyuan3D 2.1 | [Tencent Community](https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1/blob/main/LICENSE); teritorija ne uključuje EU, UK i Južnu Koreju |
+| TRELLIS.2 | [MIT](https://github.com/microsoft/TRELLIS.2/blob/main/LICENSE) za glavni repozitorijum; prateće komponente ostaju pod svojim uslovima |
+| Qwen-Image 2.1 Turbo | [Qwen Research](https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo); nekomercijalna istraživačka i evaluaciona upotreba |
+
+Pristup gated težinama odobrava vlasnik Hugging Face naloga. Token se čuva samo
+u Modal Secret-u. Prethodni nalazi ispod predstavljaju istoriju istraživanja;
+operativna konfiguracija i dokazi izvršavanja su u [Modal uputstvu](modal-generation.md).
+
+## Prethodni pregled kandidata
+
 Konkretan AI model još nije izabran. Aktivni fake provider ne učitava spoljašnje
 težine niti zahteva GPU/cloud biblioteku. Ispod su samo sačuvani nalazi prethodnog
 pregleda eksperimentalnih kandidata; njihov unos nije odluka da se koriste.

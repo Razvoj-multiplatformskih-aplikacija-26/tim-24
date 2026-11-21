@@ -96,6 +96,7 @@ final class AssetState extends Equatable {
     status,
     assets.map((asset) => asset.toJson()).toList(growable: false),
     error?.code,
+    error?.details,
     busy,
   ];
 }
@@ -179,10 +180,23 @@ final class AssetBloc extends Bloc<AssetEvent, AssetState> {
         ),
       );
     } on DomainException catch (e) {
+      var assets = previous;
+      // A rejected write may have lost a race with another user. Reload before
+      // publishing the reason, so the same final state also contains the winner.
+      if (event is! LoadAssets &&
+          e.error.code != ErrorCode.unavailable &&
+          e.error.code != ErrorCode.unauthenticated &&
+          e.error.code != ErrorCode.sessionExpired) {
+        try {
+          assets = await repository.loadAssets();
+        } catch (_) {
+          // Preserve the rejection reason even when the follow-up fetch fails.
+        }
+      }
       emit(
         AssetState(
           status: AssetLoadStatus.failure,
-          assets: previous,
+          assets: assets,
           error: e.error,
         ),
       );

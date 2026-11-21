@@ -5,7 +5,7 @@ import 'package:domain/domain.dart';
 final class MemoryAssetRepository
     implements AssetRepository, PublicationRepository {
   MemoryAssetRepository({
-    this.latency = const Duration(milliseconds: 400),
+    this.latency = const Duration(milliseconds: 800),
     DateTime Function()? clock,
   }) : _clock = clock ?? DateTime.now {
     reset();
@@ -35,7 +35,11 @@ final class MemoryAssetRepository
     reservedBytes: 0,
     requestedBytes: 200000000,
   ).orThrow;
-  Map<String, dynamic> saveProject(String name, {String? id}) {
+  Map<String, dynamic> saveProject(
+    String name, {
+    String? id,
+    int? baseRevision,
+  }) {
     final title = validateTitle(name).orThrow;
     if (id == null) {
       final value = <String, dynamic>{
@@ -47,6 +51,12 @@ final class MemoryAssetRepository
       return value;
     }
     final i = projects.indexWhere((p) => p['id'] == id);
+    if (i < 0) {
+      throw const DomainException(DomainError(ErrorCode.notFound));
+    }
+    if (baseRevision != null && projects[i]['revision'] != baseRevision) {
+      throw const DomainException(DomainError(ErrorCode.revisionConflict));
+    }
     final value = <String, dynamic>{
       'id': id,
       'name': title,

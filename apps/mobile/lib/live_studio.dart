@@ -1,9 +1,8 @@
-import 'dart:convert';
 import 'package:domain/domain.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:hedrion_api_client/hedrion_api_client.dart';
+import 'package:platform_session/platform_session.dart';
 import 'main.dart';
 import 'sqlite_persistence.dart';
 import 'studio_theme.dart';
@@ -28,8 +27,10 @@ class _LiveStudioState extends State<LiveStudio> {
       'HEDRION_API_URL',
       defaultValue: 'http://localhost:8080',
     ),
+    sessionStorage: kIsWeb
+        ? null
+        : const SecureSessionStorage(key: 'hedrion-session'),
   );
-  final storage = const FlutterSecureStorage();
   AssetRepository? repository;
   OfflineAssetRepository? offline;
   SqliteOfflinePersistence? persistence;
@@ -41,51 +42,15 @@ class _LiveStudioState extends State<LiveStudio> {
   @override
   void initState() {
     super.initState();
-    client.onSessionChanged = persistSession;
+    client.onSessionExpired = sessionExpired;
     restore();
-  }
-
-  Future<void> persistSession() async {
-    if (kIsWeb) {
-      return;
-    }
-    if (client.token == null) {
-      await storage.delete(key: 'hedrion-session');
-      return;
-    }
-    await storage.write(
-      key: 'hedrion-session',
-      value: jsonEncode({
-        'token': client.token,
-        'refreshToken': client.refreshToken,
-        'user': client.user,
-      }),
-    );
   }
 
   Future<void> restore() async {
     try {
-      if (kIsWeb) {
-        try {
-          await client.refresh();
-          await configure();
-        } on DomainException catch (e) {
-          if (e.error.code != ErrorCode.unauthenticated) {
-            error = errorMessage(e.error);
-          }
-        }
-      } else {
-        final saved = await storage.read(key: 'hedrion-session');
-        if (saved != null) {
-          final data = jsonDecode(saved) as Map<String, dynamic>;
-          client.token = data['token'] as String?;
-          client.refreshToken = data['refreshToken'] as String?;
-          client.user = data['user'] as Map<String, dynamic>?;
-          if (client.user != null) {
-            await configure();
-          }
-        }
-      }
+      if (await client.restoreSession()) await configure();
+    } on DomainException catch (e) {
+      error = errorMessage(e.error);
     } catch (_) {
       error = 'Sačuvana sesija nije dostupna. Prijavite se ponovo.';
     }
@@ -123,16 +88,7 @@ class _LiveStudioState extends State<LiveStudio> {
         await client.login(email.text.trim(), password.text);
       }
       await configure();
-      if (!kIsWeb) {
-        await storage.write(
-          key: 'hedrion-session',
-          value: jsonEncode({
-            'token': client.token,
-            'refreshToken': client.refreshToken,
-            'user': client.user,
-          }),
-        );
-      }
+      password.clear();
     } on DomainException catch (e) {
       error = errorMessage(e.error);
     } catch (_) {
@@ -147,18 +103,26 @@ class _LiveStudioState extends State<LiveStudio> {
     try {
       await client.logout();
     } catch (_) {
-      client.token = null;
-      client.user = null;
+      // The shared client clears local credentials even when the network fails.
     }
-    if (!kIsWeb) {
-      await storage.delete(key: 'hedrion-session');
-    }
-    await persistence?.close();
+    await endSession();
+  }
+
+  Future<void> sessionExpired() =>
+      endSession(reason: const DomainError(ErrorCode.sessionExpired));
+
+  Future<void> endSession({DomainError? reason}) async {
+    final oldPersistence = persistence;
     persistence = null;
     offline = null;
+    password.clear();
     if (mounted) {
-      setState(() => repository = null);
+      setState(() {
+        repository = null;
+        error = reason == null ? null : errorMessage(reason);
+      });
     }
+    await oldPersistence?.close();
   }
 
   @override
@@ -175,7 +139,7 @@ class _LiveStudioState extends State<LiveStudio> {
   Widget build(BuildContext context) {
     if (repository != null) {
       return HedrionStudio(
-        key: ValueKey(client.user!['id']),
+        key: ValueKey(client.user?['id']),
         repository: repository,
         api: client,
         offline: offline,

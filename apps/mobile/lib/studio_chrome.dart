@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'app_connection.dart';
-import 'memory_asset_repository.dart';
+import 'studio_workflows.dart';
 import 'studio_theme.dart';
 import 'sync_panel.dart';
 
@@ -53,8 +53,8 @@ class StudioShell extends StatelessWidget {
           (activeTool == null &&
               GoRouterState.of(context).uri.queryParameters['flow'] ==
                   'text-to-image');
-      final repository = context.read<AssetRepository>();
-      final live = StudioConnection.maybeOf(context)?.client != null;
+      final workflows = StudioConnection.maybeOf(context)!.workflows;
+      final live = !workflows.supportsSamples;
       return Scaffold(
         appBar: PreferredSize(
           preferredSize: const Size.fromHeight(64),
@@ -152,7 +152,7 @@ class StudioShell extends StatelessWidget {
                       ),
                       icon: const Icon(Icons.help_outline_rounded, size: 19),
                     ),
-                  _demoMenu(context, repository),
+                  _demoMenu(context, workflows),
                   const SizedBox(width: 8),
                   InkWell(
                     onTap: () => context.go('/profile'),
@@ -359,8 +359,8 @@ class StudioShell extends StatelessWidget {
     ),
   );
 
-  Widget _demoMenu(BuildContext context, AssetRepository repository) =>
-      repository is! MemoryAssetRepository
+  Widget _demoMenu(BuildContext context, StudioWorkflows workflows) =>
+      !workflows.supportsSamples
       ? IconButton(
           tooltip: 'Odjavi se',
           onPressed: StudioConnection.maybeOf(context)?.onLogout,
@@ -371,19 +371,9 @@ class StudioShell extends StatelessWidget {
           icon: const Icon(Icons.more_horiz, size: 19),
           onSelected: (value) {
             try {
-              switch (value) {
-                case 'fail':
-                  repository.failNext = true;
-                  context.read<AssetBloc>().add(const LoadAssets());
-                case 'quota':
-                  repository.exhaustQuota();
-                case 'reset':
-                  repository.reset();
-                  context.read<AssetBloc>().add(const LoadAssets());
-                case 'transfer':
-                  repository.demonstrateTransferQuota();
-                case 'storage':
-                  repository.demonstrateStorageQuota();
+              workflows.demonstrate(value);
+              if (value == 'fail' || value == 'reset') {
+                context.read<AssetBloc>().add(const LoadAssets());
               }
             } on DomainException catch (e) {
               ScaffoldMessenger.of(

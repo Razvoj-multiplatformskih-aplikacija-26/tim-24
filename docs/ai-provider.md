@@ -1,5 +1,12 @@
 # AI worker sa zamenljivim providerom
 
+> Ažuriranje 14.11.2026: tim je izabrao SPAR3D, Hunyuan3D 2.1 i TRELLIS.2,
+> uz Qwen-Image 2.1 Turbo za tekst → referentna slika. Aktuelna integracija,
+> tačni GPU-i (TRELLIS.2 isključivo L40S), pristup i dokazi su u
+> [Modal uputstvu](modal-generation.md). Ispod je sačuvana dokumentacija lokalnog
+> fake worker-a i prethodnih eksperimenata; ranija tvrdnja o neizabranom modelu
+> više ne opisuje odluku tima.
+
 Konkretan model za tekst/slika → 3D **još nije izabran**. Aktivni sistem koristi
 zajednički `GenerationProvider` port i deterministički fake provider. Izbor
 stvarnog modela ili cloud dobavljača ne menja Flutter tokove i serverski ugovor.

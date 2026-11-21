@@ -102,7 +102,7 @@ void main() {
     await tester.tap(confirm);
     await tester.pumpAndSettle();
     expect(
-      find.text('Unesite razlog odbijanja (najmanje 3 znaka).'),
+      find.text('Razlog odbijanja mora imati od 3 do 1000 znakova.'),
       findsOneWidget,
     );
 

@@ -33,13 +33,15 @@ jobs:
         with:
           python-version: '3.13'
       - run: flutter pub get
-      - run: dart format --output=none --set-exit-if-changed packages apps/mobile/lib apps/mobile/test apps/mobile/integration_test apps/backoffice/lib apps/backoffice/test apps/public_web/lib apps/public_web/bin apps/public_web/test services/api tool
+      - run: dart format --output=none --set-exit-if-changed packages apps/server apps/mobile/lib apps/mobile/test apps/mobile/integration_test apps/backoffice/lib apps/backoffice/test apps/backoffice/integration_test apps/public_web/lib apps/public_web/bin apps/public_web/test services/api tool
       - run: flutter analyze --fatal-infos
-      - run: dart test packages/domain/test packages/blocs/test packages/hedrion_api_client/test services/api/test apps/public_web/test
+      - run: dart test packages/domain/test packages/hedrion_contract/test packages/hedrion_mapping/test packages/blocs/test packages/hedrion_api_client/test services/api/test apps/public_web/test
       - run: flutter test
         working-directory: apps/mobile
       - run: flutter test
         working-directory: apps/backoffice
+      - run: flutter test
+        working-directory: packages/platform_session
       - run: python -m unittest discover -s tests -v
         working-directory: services/gpu_worker
       - run: flutter build web --release --dart-define=HEDRION_MODE=api
@@ -57,7 +59,7 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
-      - run: flutter build windows --release
+      - run: flutter build windows --release --dart-define=HEDRION_MODE=api
         working-directory: apps/backoffice
   android:
     runs-on: ubuntu-latest

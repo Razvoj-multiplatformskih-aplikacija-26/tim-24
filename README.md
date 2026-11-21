@@ -1,6 +1,6 @@
 # Hedrion
 
-AI studio za kreiranje, organizovanje i deljenje statičnih 3D modela za video-igre. Android i browser kreator koriste istu Flutter aplikaciju i, u API režimu, isti nalog, privatnu biblioteku i serverske poslove. Javno deljenje je opciono i zahteva moderatorsko odobrenje.
+AI studio za kreiranje, organizovanje i deljenje statičnih 3D modela za video-igre. Android i browser kreator koriste istu Flutter aplikaciju, nalog, privatnu biblioteku i serverske poslove. Javno deljenje je opciono i zahteva moderatorsko odobrenje.
 
 ## Tim
 
@@ -9,134 +9,141 @@ AI studio za kreiranje, organizovanje i deljenje statičnih 3D modela za video-i
 | Vasilije Stankovic | SI 100/24 | [Vaske10024](https://github.com/Vaske10024) |
 | Jovan Petrovic | SI 115/24 | [jpetrovic115si](https://github.com/jpetrovic115si) |
 
-## Šest zahteva predmeta
+## KT2: pokretanje iz čistog klona
 
-1. **Uloge:** kreator upravlja svojim privatnim modelima, moderator obrađuje prijave. Server proverava identitet, vlasništvo i ulogu; registracija ne dodeljuje moderatorska prava.
-2. **Stanja:** centralni `Asset` ima `draft`, `queued`, `generating`, `ready`, `pendingReview`, `published`, `failed`, `rejected`. Oba Flutter klijenta i server koriste ista domenska pravila; odbijena prijava čuva privatni rezultat.
-3. **Zajednička pravila:** najviše 20 prihvaćenih generacija po UTC danu, 1 GB upload+download po UTC danu i 10 GB trajnih fajlova za ceo sistem. Podaci drugih korisnika mogu da odbiju novi upis; provera i rezervacija su atomske PostgreSQL transakcije. Dva aktivna GPU posla su odvojeno pravilo raspoređivanja.
-4. **Rad bez mreže:** Android čuva keš i outbox u SQLite. Naziv, opis i favorit sačuvanog sopstvenog modela mogu da se izmene bez mreže, prežive restart i sinhronizuju uz vidljiv konflikt revizije; generisanje zahteva internet.
-5. **Posao osoblja:** Windows/veb backoffice ima tabelu, pretragu, status, bočni detalj i odobravanje/odbijanje sa razlogom. Strelice, dve prečice i vidljiv fokus podržavaju tastaturu; uži prozor prelazi u listu uz očuvan izbor.
-6. **Javni sadržaj:** zaseban Jaspr veb vraća anonimni HTML odobrenih snimaka sa naslovom, opisom, kategorijom, autorom i licencom, canonical/OG i sitemap podacima. Privatni modeli nisu deo javnog API-ja, a preuzimanje i preview prolaze kroz iste kvote.
+Potreban je Docker sa Compose v2. Iz korena novog klona, u PowerShell-u:
 
-## Struktura i režimi
-
-| Putanja | Namena |
-|---|---|
-| `packages/domain` | Čist Dart domen, ID tipovi, validatori i kvote |
-| `packages/blocs` | Zajednički Bloc sa događajima i Equatable stanjima |
-| `packages/hedrion_api_client` | HTTP adapter, trajni outbox i konfliktni tok |
-| `apps/mobile` | Jedan Flutter kreator za Android i veb |
-| `apps/backoffice` | Flutter moderator za Windows i veb |
-| `apps/public_web` | Jaspr server-rendered javna biblioteka |
-| `services/api` | Dart/Shelf, PostgreSQL, kvote, auth i scheduler |
-| `services/gpu_worker` | Privatni Python provider bridge |
-
-**KT1 je podrazumevan:** svaki Flutter klijent ima svoj memorijski repozitorijum sa najmanje deset modela i svim stanjima, kašnjenjem i komandom za grešku sledećeg zahteva. Nisu potrebni baza, internet, prijava ni GPU. **API režim** bira se sa `--dart-define=HEDRION_MODE=api`; oba klijenta tada koriste stvarni server.
-
-**AI stanje:** konkretan model još nije izabran. Zajednički provider interfejs i lokalni deterministički `fake` daju validan GLB i PNG za proveru aplikacionog toka; rezultat je jasno označena demonstracija. Stvarna inferencija i tekst → referentna slika nisu aktivni. Prethodno razmatrani adapteri ostaju isključeni eksperimenti, bez zavisnosti za osnovno pokretanje; videti [AI granicu](docs/ai-provider.md).
-
-## Čist klon i KT1
-
-Lokalno provereno okruženje: Flutter 3.47.7, Dart 3.13.5 i Python 3.12.14 za worker; workspace zahteva Dart 3.10+, a worker Python 3.11+. CI je podešen na Python 3.13. Instalirati Android SDK sa NDK `28.2.13676358` koji traži ova Flutter verzija i Visual Studio C++ alatke za odgovarajuće platforme. Iz korena:
-
-```sh
-flutter pub get
+```powershell
+Copy-Item .env.example .env
+docker compose up --build -d
 ```
 
-U zasebnim terminalima:
+Na Linux/macOS koristiti `cp .env.example .env`, pa istu Compose komandu. Primer sadrži upotrebljive **lokalne razvojne** vrednosti; za ovaj tok ne treba menjati nijednu. Ako `.env` već postoji zbog Modala, sačuvati ga i ne prepisivati ga primerom.
+
+Compose podiže PostgreSQL, Relic **1.2.0** API i privatni CPU fake worker. API pri pokretanju primenjuje migracije i idempotentni seed. Nije potrebno ručno kreirati tabele ili naloge. Seed sadrži **16 modela**, po jedan u svakom od osam stanja za oba kreatora, kao i četiri naloga:
+
+| Uloga | Imejl | Razvojna lozinka |
+|---|---|---|
+| Kreator 1 | `creator1@hedrion.test` | `HedrionCreator123!` |
+| Kreator 2 | `creator2@hedrion.test` | `HedrionCreator123!` |
+| Moderator | `moderator@hedrion.test` | `HedrionModerator123!` |
+| Administrator | `admin@hedrion.test` | `HedrionAdmin123!` |
+
+Lozinke se u bazu upisuju kao PBKDF2 heševi. Ponovno pokretanje ne prepisuje postojeće naloge i korisničke izmene. Seed `queued`/`generating` modeli su demonstracioni snimci stanja i ne pokreću skrivene poslove; novi eksplicitni zahtev prolazi normalan fake worker tok. Lokalni seed i fake worker ne koriste GPU niti Modal kredite. Stvarno generisanje ostaje dostupno u posebno podešenom Modal režimu.
+
+```powershell
+docker compose ps
+Invoke-RestMethod http://localhost:8080/health
+```
+
+API je na `http://localhost:8080`, baza na `127.0.0.1:55432`, a worker je dostupan samo u Compose mreži. Baza i fajlovi koriste trajne volume-e. `docker compose down` zaustavlja ovaj sistem i zadržava podatke. Ako su portovi zauzeti, podesiti `API_PORT`/`POSTGRES_PORT` u lokalnom `.env`, a klijentu proslediti odgovarajuću API adresu.
+
+## Flutter klijenti nad serverom
+
+Potrebni su Flutter/Dart, Android SDK za emulator i Visual Studio C++ alatke za Windows. Razvojno okruženje je Flutter 3.47.7, Dart 3.13.5 i Android NDK `28.2.13676358`; workspace zahteva Dart 3.10+. Iz korena pokrenuti `flutter pub get`, zatim u zasebnim terminalima:
 
 ```sh
 cd apps/mobile
-flutter run -d <android-device-id>
-# Ista kreatorska aplikacija u browser-u:
-flutter run -d chrome --web-port 8082
+flutter run -d <android-device-id> --dart-define=HEDRION_MODE=api --dart-define=HEDRION_API_URL=http://10.0.2.2:8080
+# Isti kreator u browser-u:
+flutter run -d chrome --web-port 8082 --dart-define=HEDRION_MODE=api --dart-define=HEDRION_API_URL=http://localhost:8080
 ```
 
 ```sh
 cd apps/backoffice
-flutter run -d windows
-# Ili isti moderator u browser-u:
-flutter run -d chrome --web-port 8083
+flutter run -d windows --dart-define=HEDRION_MODE=api --dart-define=HEDRION_API_URL=http://localhost:8080
+# Isti moderator u browser-u:
+flutter run -d chrome --web-port 8083 --dart-define=HEDRION_MODE=api --dart-define=HEDRION_API_URL=http://localhost:8080
 ```
 
-`flutter devices` prikazuje Android identifikator. Backoffice: strelice biraju zapis, Ctrl+Enter odobrava, Ctrl+Backspace otvara odbijanje. KT1 scenariji i četiri stanja su u [kontrolnoj listi](docs/checkpoint-evidence/kt1.md).
+`flutter devices` prikazuje Android identifikator. `10.0.2.2` je adresa hosta iz Android emulatora; fizički telefon koristi dostupnu LAN/HTTPS adresu. Za browser koristiti `localhost` i u UI i u API adresi zbog SameSite cookie-ja. Portovi 8082/8083 pripadaju podrazumevanom CORS spisku. Adrese se menjaju podešavanjem, bez izmene Dart koda.
 
-## Lokalni API režim
+Backoffice: strelice biraju zapis, Ctrl+Enter odobrava, Ctrl+Backspace otvara odbijanje. Kreatorski nalog se odbija uz objašnjenje da je backoffice namenjen moderatorima i administratorima.
 
-Kopirati vrednosti iz `.env.example` u shell okruženje; aplikacije ne učitavaju `.env` automatski. Primer za PowerShell, sopstvenim lokalnim lozinkama:
+Mobilni i Windows klijent čuvaju sesiju kroz `SessionStorage` port i platformski secure storage. Browser koristi odvojene HttpOnly refresh cookie-je za studio i backoffice. Lozinka se na uređaju ne čuva. Trajanje određuju `SESSION_ACCESS_TTL_SECONDS` i `SESSION_REFRESH_TTL_SECONDS` na serveru; istekla sesija prikazuje objašnjenje i vraća prijavu.
 
-```powershell
-$env:POSTGRES_PASSWORD = '<lokalna-lozinka>'
-docker compose -f infrastructure/docker-compose.yml up -d postgres
-$env:DATABASE_URL = 'postgres://hedrion:<lokalna-lozinka>@127.0.0.1:55432/hedrion?sslmode=disable'
-$env:WORKER_SHARED_SECRET = '<ista-nasumicna-tajna-od-najmanje-32-znaka>'
-$env:WORKER_URL = 'http://127.0.0.1:8091'
-$env:OBJECT_STORAGE_PATH = '../../.local/objects'
-$env:CORS_ORIGINS = 'http://localhost:8082,http://localhost:8083'
-$env:SECURE_COOKIES = 'false' # Samo lokalni HTTP; produkcija koristi HTTPS.
-cd services/api
-dart run bin/migrate.dart
-$env:MODERATOR_EMAIL = 'moderator@example.test'
-$env:MODERATOR_PASSWORD = '<lozinka-od-najmanje-12-znakova>'
-dart run bin/create_moderator.dart
-dart run bin/server.dart
-```
+## Struktura
 
-Novi terminal, postaviti istu worker tajnu:
+| Putanja | Namena |
+|---|---|
+| `packages/domain` | Čist Dart domen, ID tipovi, zajednička prava, validatori i kvote |
+| `packages/hedrion_contract` | Nezavisni Dart DTO zahtevi, odgovori, stranice i greške |
+| `packages/hedrion_mapping` | Zajednički prevod DTO ↔ domen, uključujući greške |
+| `packages/blocs` | Zajednički Bloc sa događajima i Equatable stanjima |
+| `packages/hedrion_api_client` | VM/browser HTTP adapter, sesijski port, trajni outbox i konflikti |
+| `packages/platform_session` | Zajednički adapter platformskog secure storage-a |
+| `apps/server` | Relic 1.2.0 server i pokretanje iz okruženja |
+| `apps/mobile` | Jedan Flutter kreator za Android i veb |
+| `apps/backoffice` | Flutter moderator za Windows i veb |
+| `apps/public_web` | Jaspr server-rendered javna biblioteka |
+| `services/api` | Serverski servisni sloj: PostgreSQL, auth, kvote, fajlovi i scheduler |
+| `services/gpu_worker` | Privatni Python provider bridge i Modal adapteri |
 
-```powershell
-cd services/gpu_worker
-$env:WORKER_SHARED_SECRET = '<ista-tajna-kao-na-API-ju>'
-$env:GENERATION_PROVIDER = 'fake'
-python -m hedrion_worker.server --port 8091
-```
+## Pravila i tokovi
 
-Javni veb, novi terminal:
+1. **Uloge:** kreator upravlja sopstvenim privatnim modelima, moderator/admin odobrava ili odbija prijave. Prava su u domenu, a server identitet učitava samo iz sopstvene sesije. Registracija ne dodeljuje moderatorska prava.
+2. **Stanja:** `Asset` koristi `draft`, `queued`, `generating`, `ready`, `pendingReview`, `published`, `failed`, `rejected`. Odbijena prijava čuva privatni rezultat.
+3. **Zajednički kapacitet:** najviše 20 prihvaćenih generacija po UTC danu, 1 GB prenosa po UTC danu i 10 GB trajnih fajlova za ceo sistem. Provera i rezervacija su atomske PostgreSQL transakcije. Dva globalna aktivna worker posla i jedan aktivan zahtev po kreatoru su odvojena ograničenja. Odbijena akcija prikazuje razlog i osvežava podatke.
+4. **Ugovor:** DTO paket ne uvozi domen, Flutter ni `dart:io`. Mape između domena i DTO-a postoje u jednom paketu. Greška prenosi kod i podatke pravila, a klijent sastavlja poruku iz primljene granice. Nepoznat kod daje razumljivu lokalnu poruku.
+5. **Rad bez mreže:** Android čuva keš i outbox u SQLite. Naziv, opis i favorit keširanog sopstvenog modela mogu da se izmene bez mreže, prežive restart i sinhronizuju uz vidljiv konflikt revizije. Generisanje zahteva mrežu.
+6. **Javni sadržaj:** Jaspr prikazuje HTML odobrenih snimaka sa autorom, licencom, canonical/OG i sitemap podacima. Privatni modeli nisu deo javnog API-ja. Fajlovi se preuzimaju kroz metereni API.
+
+## Modal i javni veb
+
+Modal adapteri podržavaju SPAR3D (L4), Hunyuan3D 2.1 (L40S), TRELLIS.2 (**isključivo L40S**) i Qwen-Image 2.1 Turbo (L40S). Tekstualni zahtev prvo generiše referentnu sliku kroz Qwen, zatim izabrani 3D model. Interaktivni pregled i download koriste GLB sa servera.
+
+Za postojeći plaćeni tok zadržati lokalni `.env` sa `GENERATION_PROVIDER=modal`, stvarnim `WORKER_URL` gateway-a i odgovarajućom serverskom tajnom. Nad postojećom korisničkom bazom koristiti `SEED_DEMO_DATA=false`; demo seed pripada čistoj KT2 bazi. Klijenti i dalje komuniciraju samo sa Relic API-jem. Podešavanje, stvarna merenja, trošak i poznato Hunyuan ograničenje opisani su u [Modal uputstvu](docs/modal-generation.md). Ne treba ponavljati benchmark radi KT2 demonstracije.
+
+Jaspr javna biblioteka pokreće se zasebno kada je potrebna demonstracija javnog HTML-a:
 
 ```powershell
 cd apps/public_web
-$env:API_ORIGIN = 'http://127.0.0.1:8080'
+$env:API_ORIGIN = 'http://localhost:8080'
 $env:PUBLIC_ORIGIN = 'http://localhost:8081'
 $env:STUDIO_ORIGIN = 'http://localhost:8082'
 dart run bin/server.dart
 ```
 
-Pokrenuti Flutter klijente uz `--dart-define=HEDRION_MODE=api --dart-define=HEDRION_API_URL=http://localhost:8080`. Za browser studio zadržati `--web-port 8082`, a za browser moderator `--web-port 8083`; ti portovi odgovaraju gornjem `CORS_ORIGINS` spisku. Android emulator koristi `http://10.0.2.2:8080`; fizički telefon zahteva dostupnu LAN/HTTPS adresu API-ja i odgovarajući bind/firewall.
+## KT1 memorijski režim
 
-Registrovati kreatora u studiju; isti nalog radi na telefonu i vebu. Moderator se prijavljuje prethodno kreiranim nalogom. Primeri API ugovora su u [API dokumentaciji](docs/api.md), a ceo tok u [demo scenariju](docs/demo.md).
+Za KT1 izostaviti `--dart-define=HEDRION_MODE=api`. Oba Flutter klijenta tada koriste svoje memorijske implementacije, bez servera i GPU-a. Kontrolna lista je u [KT1 dokazima](docs/checkpoint-evidence/kt1.md). API ugovor je u [API dokumentaciji](docs/api.md), demonstracija u [demo scenariju](docs/demo.md), a priprema svih KT2 tačaka i izmena pravila u [vodiču za odbranu](docs/kt2-defense.md).
 
 ## Provere i build
 
-Iz korena:
+Za PostgreSQL integracione testove prvo postaviti `TEST_DATABASE_URL` iz lokalnog `.env`. Testovi koriste zasebnu privremenu šemu, koju zatim brišu; bez promenljive integracioni deo je preskočen i to nije dokaz serverske ispravnosti. PowerShell može učitati samo tu promenljivu bez prikaza tajni:
+
+```powershell
+$env:TEST_DATABASE_URL = (Get-Content .env | Where-Object { $_ -match '^TEST_DATABASE_URL=' }) -replace '^TEST_DATABASE_URL=', ''
+```
+
+Zatim iz korena:
 
 ```sh
 dart analyze
-dart test packages/domain/test packages/blocs/test packages/hedrion_api_client/test apps/public_web/test services/api/test
+dart test packages/domain/test packages/hedrion_contract/test packages/hedrion_mapping/test packages/blocs/test packages/hedrion_api_client/test apps/public_web/test services/api/test
+dart run tool/kt2_smoke.dart http://localhost:8080
 ```
 
-Za stvarne PostgreSQL integracione testove postaviti `TEST_DATABASE_URL` kao `DATABASE_URL`. Testovi koriste zasebnu privremenu šemu, koju zatim brišu; bez promenljive integracioni deo je preskočen i to nije dokaz serverske ispravnosti.
+Iz `apps/mobile`:
 
 ```sh
-cd apps/mobile
 flutter test
-flutter build apk --debug
-flutter build web --release
+flutter build apk --debug --dart-define=HEDRION_MODE=api --dart-define=HEDRION_API_URL=http://10.0.2.2:8080
+flutter build web --release --dart-define=HEDRION_MODE=api --dart-define=HEDRION_API_URL=http://localhost:8080
 ```
 
+Iz `apps/backoffice`:
+
 ```sh
-cd apps/backoffice
 flutter test
-flutter build windows --release
-flutter build web --release
+flutter build windows --release --dart-define=HEDRION_MODE=api --dart-define=HEDRION_API_URL=http://localhost:8080
+flutter build web --release --dart-define=HEDRION_MODE=api --dart-define=HEDRION_API_URL=http://localhost:8080
 ```
 
-```sh
-cd services/gpu_worker
-python -m unittest discover -s tests -p test_worker.py -v
-```
+Zajednički secure-storage adapter ima Flutter testove: iz `packages/platform_session` pokrenuti `flutter test`. Iz `services/gpu_worker` pokrenuti `python -m unittest discover -s tests -v`.
 
-`tool/smoke.dart` proverava stvarni HTTP tok kroz oba kreatorska session-a, worker, preuzimanje, moderatora i Jaspr. Pokrenuti sve servise, postaviti `MODERATOR_EMAIL`/`MODERATOR_PASSWORD`, pa iz korena `dart run tool/smoke.dart <putanja-do-PNG-slike>`.
+`tool/kt2_smoke.dart` proverava KT2 HTTP tok nad seedovanim fake sistemom i odbija plaćeni provider pre mutacija. Izvršeni rezultati su u [izveštaju o proveri](docs/verification.md). `tool/smoke.dart` dodatno pokriva Jaspr tok uz putanju do PNG slike i moderatorske promenljive okruženja.
 
-[CI](.github/workflows/ci.yml) pokriva analizu, format, testove sa PostgreSQL-om i veb/Windows build. [Isporuka](docs/deployment.md) opisuje release komande, TLS, sesije, skladište i preostale spoljašnje uslove. Lokalno izvršeni rezultati i ograničenja vode se u [izveštaju o proveri](docs/verification.md).
+[CI](.github/workflows/ci.yml) pokriva analizu, format, PostgreSQL testove i platformske build-ove. [Isporuka](docs/deployment.md) opisuje release komande, mrežu i skladište. Lokalno izvršeni rezultati i ograničenja vode se u [izveštaju o proveri](docs/verification.md).
 
-Izvorni DOCX dokumenti ostaju neizmenjeni. Detaljna KT2–KT4 pravila nisu priložena; plan prati konačnu specifikaciju i objavljene opšte zahteve. Prihvatanje teme, rok `main` predaje i odbrana oba člana tima ostaju obaveze tima.
+Za KT2 se ocenjuje stanje koje stigne na GitHub granu `main` do **21.11.2026. u 23:59:59**. Odbrana je **22.11.2026.**; oba člana obrazlažu ceo sistem i izmenu pravila uživo. Lokalni testovi i dokumentacija ne predstavljaju potvrdu da je commit već pushovan ili da je odbrana završena.

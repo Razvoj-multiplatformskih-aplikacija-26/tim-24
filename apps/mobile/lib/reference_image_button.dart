@@ -15,7 +15,7 @@ class ReferenceImageButton extends StatefulWidget {
 class _ReferenceImageButtonState extends State<ReferenceImageButton> {
   bool busy = false;
   Future<void> upload() async {
-    final api = StudioConnection.maybeOf(context)!.client!;
+    final workflows = StudioConnection.maybeOf(context)!.workflows;
     setState(() => busy = true);
     try {
       final image = await ImagePicker().pickImage(
@@ -31,7 +31,7 @@ class _ReferenceImageButtonState extends State<ReferenceImageButton> {
       if (bytes.length > 10000000) {
         throw const DomainException(DomainError(ErrorCode.invalidInput));
       }
-      await api.uploadImage(
+      await workflows.uploadImage(
         widget.asset.id,
         bytes,
         mime: bytes.length > 2 && bytes[0] == 137 ? 'image/png' : 'image/jpeg',

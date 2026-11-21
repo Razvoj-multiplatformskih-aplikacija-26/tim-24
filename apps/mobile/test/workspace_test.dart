@@ -113,7 +113,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('Dnevna kvota za generisanje je popunjena.'),
+      find.text(
+        'Dnevna kvota za generisanje je popunjena (najviše 20 zahteva).',
+      ),
       findsOneWidget,
     );
     expect(tester.widget<TextField>(prompt).controller!.text, 'Drveni sanduk');

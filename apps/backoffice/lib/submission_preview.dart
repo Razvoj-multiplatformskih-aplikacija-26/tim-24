@@ -1,7 +1,8 @@
 import 'dart:typed_data';
 import 'package:domain/domain.dart';
 import 'package:flutter/material.dart';
-import 'live_backoffice.dart';
+import 'moderation_workflows.dart';
+import 'moderation_workflows_scope.dart';
 import 'studio_theme.dart';
 
 class SubmissionPreview extends StatefulWidget {
@@ -13,7 +14,7 @@ class SubmissionPreview extends StatefulWidget {
 
 class _SubmissionPreviewState extends State<SubmissionPreview> {
   Future<Uint8List>? bytes;
-  String? fileId;
+  (ModerationWorkflows, AssetId, String?)? previewKey;
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -27,17 +28,30 @@ class _SubmissionPreviewState extends State<SubmissionPreview> {
   }
 
   void load() {
-    final api = BackofficeConnection.maybeOf(context)?.api;
-    if (api != null && fileId != widget.asset.previewFileId) {
-      fileId = widget.asset.previewFileId;
-      bytes = api.fetchPreview(widget.asset);
+    final workflows = BackofficeConnection.of(context).workflows;
+    final key = (workflows, widget.asset.id, widget.asset.previewFileId);
+    if (previewKey != key) {
+      previewKey = key;
+      bytes = workflows.supportsFiles && widget.asset.previewFileId != null
+          ? requestPreview(workflows)
+          : null;
     }
+  }
+
+  Future<Uint8List> requestPreview(ModerationWorkflows workflows) {
+    final request = Future<Uint8List>.sync(
+      () => workflows.fetchPreview(widget.asset),
+    );
+    // FutureBuilder subscribes at the next build; an immediate offline failure
+    // must be handled during that interval as well as displayed by the builder.
+    request.ignore();
+    return request;
   }
 
   @override
   Widget build(BuildContext context) {
-    final api = BackofficeConnection.maybeOf(context)?.api;
-    if (api == null) {
+    final workflows = BackofficeConnection.of(context).workflows;
+    if (!workflows.supportsFiles) {
       return AssetArtwork(asset: widget.asset, height: 195);
     }
     return SizedBox(
@@ -59,9 +73,9 @@ class _SubmissionPreviewState extends State<SubmissionPreview> {
                 if (snapshot.hasError) {
                   return Center(
                     child: TextButton.icon(
-                      onPressed: () => setState(
-                        () => bytes = api.fetchPreview(widget.asset),
-                      ),
+                      onPressed: () => setState(() {
+                        bytes = requestPreview(workflows);
+                      }),
                       icon: const Icon(Icons.refresh),
                       label: const Text('Pokušaj ponovo'),
                     ),
